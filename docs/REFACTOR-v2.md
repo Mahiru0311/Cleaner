@@ -440,3 +440,174 @@ iPhone 17 Pro Max / iOS 27.0 上装 0.2.2 后看截图确认。
 - 清缓存不备份：确认弹窗必须留，误删离线内容（音乐、地图、下载）要重新下载。
 - 真机验证只能在你 iPhone 17 / iOS 27.0.1 上做，我这边 Linux 编不出 IPA，
   靠 GitHub Actions 构建，你那边装了试。
+
+## 10. v2.3（2026-11-10 晚，v2.2 真机截图反馈 + GitHub 研究）
+
+用户在 iPhone 17 Pro Max / iOS 27.0 上装了 0.2.2（截图
+`docs/v2-2-real-device-home-2026-11-10.jpg`，19:10，清理后应用 0 /
+可清理 0 KB），提了 7 件事（版本 0.2.3，build 1 不变）。本轮先做 Phase 0
+GitHub 研究（`docs/GITHUB-RESEARCH-v2.3.md`），再动手。
+
+### Phase 0 研究（先做，写进文档，再指导实现）
+
+- **YangJiiii/3105（GPL-3.0，Swift/SwiftUI，982★）**：唯一另一个不用
+  越狱的清理器。借到两样东西：① fd 遍历（`open`/`openat`/`fstatat`
+  `AT_SYMLINK_NOFOLLOW`/`fdopendir`/`unlinkat`，永不跟随链接——没有
+  TOCTOU 窗口，比 WQFiles 的路径字符串检查严格；Swift 代码不移植，
+  按思路用 C 重写）；② 清理前后重扫记账（`freed = 清理前 − 清理后`，
+  删成功/失败的条数）。不借它的容器访问（MobileHouseArrest + 固定
+  bundle ID + iOS 17/18 内核漏洞，要企业证书）。
+- **Erosion（GPL-3.0，666★）**：worse_query 的定制工具箱（MobileGestalt
+  改机型、壁纸、拨号盘），没有清理逻辑——只确认 worse_query 支持
+  iOS 27.0–27.2.1、27.3b1。
+- **WQFiles 32 个 fork**：全是原样复制，无功能 fork（项目才 2 天）。
+  worse_query：394★ / 75 fork，GPL-3.0。
+- **iCleaner**：越狱（root）专用，出局；**iOS Clean Pro**：
+  TrollStore 专用、iOS 14–17.0，出局；**Sweeply**：macOS 清理器，
+  MIT，只有分类思路可借；**FilzaJailedDS / MobileHouseArrest-PoC**：
+  漏洞 PoC，不是清理器，出局。
+- **各应用缓存子路径**：没有权威的开源清单（微信/QQ/抖音/B站/小红书
+  都搜过）。唯一可移植的模型是 Apple 的目录语义：`Library/Caches` +
+  `tmp` = 可丢弃/可再生（不备份，系统可清），随便删；`Documents` +
+  `Library/Application Support` = 用户数据（备份，系统不自动删），
+  默认绝不碰。所以“更强”来自 fd 遍历 + 更细的分类 + 自定义规则，
+  不是抄一张路径表。
+- 许可证：Cleaner 已是 GPL-3.0（与 WQFiles / worse_query / 3105 一致），
+  借思路不产生新的许可证义务；来源记在 §10 与 Settings 的来源行。
+
+### 首页方向三改（19:17 → 19:20 → 19:28，最终以最后一条为准）
+
+- 19:17 用户说“上面直接是一个长方形”：改跟 KernelSU 最新版
+  `HomeMaterial.kt` 的通栏 StatusCard（单张通栏卡、左对勾、中标题、
+  右蓝 pill，两张白卡删掉）。已按这条改了一版。
+- 19:20 用户说“算了，你还是改成之前那种吧，这种真的很丑……不按它的
+  颜色了和样子，就是只参考参照物”：改回分栏，但状态卡改白色、标题黑、
+  副标题灰、对勾实心 #34C759 + 白色粗对勾、KSU 只作参照。已按这条
+  改了一版。
+- 19:28 用户说“白色版太丑，改回和 KernelSU 一模一样的”：**最终方向是
+  KSU 老版首页 1:1**，上面两条作废。实现按参照图
+  `docs/kernelsu-old-home-reference.jpg` 与 `HomeMiuix.kt` 源码核对过：
+  浅绿卡 #DFFAE4（已授权 / `<App Group> [沙盒模式]` / 版本：0.2.3，
+  标题 22pt semibold、版本 15pt）、右侧两张白卡（应用 / 可清理）、
+  对勾是 `Icons.Rounded.CheckCircleOutline`——**空心粗环 + 粗对勾**，
+  #36D167、110pt、锚在绿卡右下角向外溢出（+27 右 / +31 下）。对勾是手画
+  的 `CLCheckBadgeView`（SF Symbol 的 checkmark.circle 环太细），
+  环与对勾各 ~12pt 粗，环内是绿卡底色。
+- 溢出能成立的条件（v2.2 §9 里明确拒绝过的“绿卡加高”方案，用户两次
+  推翻了这个判断——现在绿卡就是比右列高）：状态行用
+  `UIStackViewAlignmentTop`（KSU 的 Row 默认顶对齐），右列不被拉伸；
+  绿卡高 = 右列高 + 90pt；对勾顶部在绿卡底线上方 79pt，右列底边在
+  绿卡底线上方 90pt——对勾与白卡之间留 11pt 空隙；行下间距 44pt，
+  对勾向下溢出 31pt 后离信息卡还有 13pt。本地测试用布局数学断言这
+  两个间隙（`browser_ui_regressions.py`），改回 Fill 对齐或改小高差
+  都会失败。v2.1 的教训：只修纵向（44pt）不够，横向碰撞才是根因。
+- 四态保留：已授权是上面这套绿卡 + 空心绿对勾；受限/未授权/不支持仍
+  是 v2 的琥珀/红/灰卡 + 卡内 88pt SF Symbol 图标（不溢出）。
+
+### 其余 6 项
+
+1. **应用图标黑白风。** v2.2 的彩色符号兜底（按 bundle ID 关键词挑
+   颜色 + 符号）用户说“真的很丑”，已删（`cl_service_tile` 整个删掉）。
+   新规则：只有确认为高清真图标才显示真图标，否则一律中性 tile——
+   应用名首字、黑色、米色 #F5F1E8（与应用 mark 同色）、连续 squircle
+   （22.37%），清理列表（36pt）与应用页共用 `cl_app_icon`，两处一致。
+   彩色符号块全项目已禁（测试断言）。
+2. **删机型编号。** 清理页与应用页搜索栏下的
+   `cl_device_header`（“iPhone 17 Pro Max (iPhone18,2) · iOS …”）整
+   条删掉；`cl_device_line` 只留给日志页页眉。顺带修了一个真 bug：
+   首页 `cl_device_model` 的 iPhone18,x 映射是错的（18,1→iPhone 17、
+   18,2→iPhone 17 Pro、18,3→iPhone 17 Pro Max），已按 Apple 设备码
+   核对改过来（18,1=17 Pro、18,2=17 Pro Max、18,3=17、18,4=Air、
+   18,5=17e）。注意：用户手机报的是 iPhone18,3，所以信息卡的设备型
+   号从 0.2.3 起会显示 **iPhone 17**，不再是之前错误映射给出的
+   “iPhone 17 Pro Max”——不是改错了，是之前显示错了。
+3. **应用数清理后变 0 的 bug。** 根因：`scanOneContainer` 对缓存 +
+   临时 < 64KB 的应用不返回行，`CLCacheStore.appCount` 数的是行数；
+   清理后所有应用都 ~0 字节，重扫后一行不剩，应用数变成 0。修法：
+   扫描器数所有量过的容器（`ctx.totalContainers`，含 <64KB 的），
+   经 completion 传给 store 的 `totalAppCount`；首页应用数改读
+   `totalAppCount`，与缓存大小无关；清理列表仍不显示 <64KB 的行。
+   回归测试：`tests/CLCustomCleanTests.m` 里清完后
+   `totalAppCount` 仍是 114、`appCount` 0、`totalBytes` 0。
+4. **iPhone 快捷指令（无服务器）。** URL scheme `cleaner://clean` 与
+   `cleaner://scan`：`CFBundleURLTypes` 注册在 Info.plist，
+   `CLSceneDelegate` 的 `scene:openURLContexts:`（含冷启动的
+   `connectionOptions.URLContexts`）交给 `CLTabBarController` 的
+   `handleShortcutURL:`，跳清理页后调 `startShortcutAction:`；clean
+   会全选可清理行并**照常弹确认框**（快捷指令不经确认不删东西），
+   扫描进行中触发则等扫描结束再跑。设置页新增「快捷指令」区：2 步
+   指南（新建快捷指令 → 打开 URL → `cleaner://clean`）与复制链接两行。
+   **App Intents 没做**：intent 跑在独立的扩展进程里，App Group 沙盒
+   授权签发在主应用进程内——不打开应用直接清理需要新 extension
+   target + 未验证的授权流程，老实说做不到，先给 URL scheme。
+5. **WQFiles 清理全移植 + 更强 + 自定义清理。** 原项目功能已在 v2/v2.2
+   齐了（每应用 Caches + tmp、崩溃日志、备份/恢复/清空、目录钻取），
+   本轮补齐最后一块并加强：① **fd 测量**：`cl_measure_tree` 从
+   NSFileManager 路径枚举改成 fd 遍历（`fstatat
+   AT_SYMLINK_NOFOLLOW` + `fdopendir` + `openat O_NOFOLLOW`，3105 的
+   思路，C 重写）——路径字符串走查可能钻进符号链接目录导致多算，
+   fd 走查没有这个窗口；清理本身 v2 起已是 fd 的（`cl_purge_fd`）。
+   ② **Caches 子目录拆分**：扫描时量 Caches 的前 5 大一级子目录
+   （`cl_measure_tree_subdirs`，结果进测量缓存），目录页在
+   `Library/Caches` 下直接显示文件夹大小，不再只显示项数。
+   ③ **目录页左滑清文件夹**：`cl_purge_folder_contents`（只清内容、
+   文件夹保留；容器本身与容器外拒绝；Documents/Library 子文件夹
+   多一句用户数据警告；整应用清空仍走根目录先备份的「清空数据」）。
+   ④ **自定义清理**（新 `Core/CLCustomClean.*` +
+   `App/CLCustomCleanViewController`，入口在清理页「选择」菜单）：
+   规则 = 应用（或全部）+ 文件夹相对路径 / 扩展名 / 文件名包含；
+   4 个预设（视频缓存 .mp4/.mov/.m3u8/.ts、图片缓存
+   .jpg/.jpeg/.png/.webp/.heic/.gif、日志 .log/.txt、临时文件 tmp）；
+   排除列表（应用、文件夹，任何规则都不碰）；文件夹规则禁容器根、
+   Documents、Library 本身；扩展名/文件名规则只碰 Library/Caches +
+   tmp（`cl_clean_matching_files` 强制）；执行在后台队列，逐规则报
+   进度，结果给释放字节 + 失败数 + 非缓存目标警告。⑤ **清理前后记账**
+   （3105 的思路）：每应用记清理前 − 清理后（`freed` 按应用写日志），
+   清理完重扫核对。
+6. **动画重做。** 全部用系统动画（UIView spring / CADisplayLink），
+   不再手写 spinner：① 扫描增量行改 `insertRows` 淡入（搜索时回退
+   reloadData；表头计数手动刷新）；② 扫描进度条读真实进度
+   （`正在测量应用 23/114…` 解析成 N/M）；③ 清理时当前行在对勾位
+   置转 spinner、清完的行变绿对勾；④ 大总数用 CADisplayLink 在
+   0.4 秒内按实际释放量倒数（ease-out）；⑤ 清完且重扫结束后，摘要
+   卡里绿对勾弹簧放大（damping 0.6）+ 成功震动
+   （`UINotificationFeedbackGenerator`）。主线程从不阻塞：量、清、
+   自定义清理全在后台队列，主线程只更新 UI。
+
+本地已验（Linux，无 Xcode）：`browser_ui_regressions.py` 通过（新增断言：
+KSU 1:1 对勾 110pt/+27/+31/顶对齐/+90/44pt 间隙与布局数学、黑白图标
+首字 tile、无机型编号条、正确 18,x 映射、应用数清后不变、fd 遍历与
+子目录拆分、目录页左滑清文件夹、自定义清理、cleaner:// scheme、
+动画钩子、版本 0.2.3）；
+`python3 -m unittest discover -s tests -p 'test_*.py'` 16 个，2 个失败与
+v2.0–v2.2 相同（`test_build` 两用例缺 `plutil`，Linux 固有）；`bash -n
+build.sh` 及各 runner 通过。macOS runner 上 16 个 unittest 全过（有
+plutil），另有 ObjC 套件 9 个（含新增 `CLCustomCleanTests`：文件夹
+规则校验、扩展名/文件名只碰 Caches+tmp、排除生效、按文件夹清理、
+子目录拆分、应用数清后不变）。
+
+构建第一轮成功：Actions run **42809329899**，completed/success（Xcode 26.6 /
+iOS SDK 26.5），一次过。本地 4ef012f（Core）+ 9bd1c36（App）→ 远程
+dc765f0d → b3be1840，`refactor/v2`，两次推送 tree SHA 与本地逐字节一致。
+IPA（第一轮）：`~/workspace/downloads/cleaner-v2-3-ipa/Cleaner.ipa`，
+**163,190 字节**（目标 <250KB ✓），主二进制 **432,448 字节**（目标
+<500KB ✓；比 v2.2 的 382,176 大——自定义清理 + 动画 + fd 测量），
+SHA-256 a21d6cc3fbaf47b1dc1d4f71a4944c7cb5ce1089749966e97a8ac5347a25fe4b。
+
+构建第二轮（开关 tag 修补）：本地 f5572f1 → 远程 ff9c7f17，tree SHA
+逐字节一致；Actions run **42809580201**，completed/success，一次过。
+**最终 IPA**：`~/workspace/downloads/cleaner-v2-3-ipa/Cleaner.ipa`，
+**163,268 字节**，SHA-256
+**ecdea1510839c2e34af99714fe15d444f9f8eead39ba0a79c27e01d539b02afc**，
+Mach-O 64-bit arm64，Info.plist Cleaner / com.mahiru.cleaner / 0.2.3 /
+build 1 / MinimumOS 26.0 / zh_CN / 仅 iPhone（UIDeviceFamily [1]）。
+二进制含中文串（UTF-16LE，如 已授权 / 可清理 / 自定义清理 /
+快捷指令 / cleaner://clean）；URL scheme `cleaner://` 已注册在
+Info.plist；App Group `group.com.mahiru.cleaner` 在二进制内，build.sh
+PlistBuddy 检查 OK，签名用了 `--entitlements entitlements.plist`。
+已发给用户（ad-hoc 签名——重签时保留 App Group）。
+真机验证仍未做：对勾位置（空心环是否落在空白处）、图标观感（多少行
+是真图标、首字 tile 是否顺眼）、应用数清理后是否仍是 114、快捷指令
+调用、自定义清理流程、动画（倒数、弹簧对勾、震动）——都须用户在
+iPhone 17 / iOS 27.0 上装 0.2.3 后看截图确认。另：设备型号行会从
+“iPhone 17 Pro Max”变成“iPhone 17”（映射修正，见上）。

@@ -427,7 +427,7 @@ int main(void)
                   [loadedRule[CLCustomRulePatternKey] isEqualToString:@"Library/Caches/videos"] &&
                   [loadedRule[CLCustomRuleScopeKey] isEqualToString:CLCustomRuleScopeFiltered],
                   @"reloaded rule keeps bundle, pattern and scope");
-            check(loadedRule[CLCustomRuleIDKey].length > 0, @"reloaded rule has a UUID");
+            check([(NSString *)loadedRule[CLCustomRuleIDKey] length] > 0, @"reloaded rule has a UUID");
             check([loadedRule[CLCustomRuleEnabledKey] boolValue], @"new rule is enabled");
             check([cl_custom_clean_rule_summary(loadedRule) containsString:@"Library/Caches/videos"],
                   @"rule summary shows the picked directory");

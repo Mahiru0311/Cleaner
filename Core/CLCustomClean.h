@@ -9,13 +9,22 @@
 //  than N days), size (only larger than X / smaller than Y) and subfolder
 //  (only under Library/Caches/<name>), and every rule can be dry-run
 //  first (preview matched files + bytes, then confirm).
+//  v2.5: directory rules (kind @"directory") — the user picks a directory
+//  in the picker page (drill-down, or pastes a path) and chooses a scope:
+//  purge the whole directory, or delete only files matching conditions
+//  (extensions / name / age / size) inside that directory. A directory
+//  rule may target any subpath of a container except the container root
+//  itself and the top-level Documents / Library; a target outside
+//  Library/Caches + tmp is allowed but warned about (user data).
 //  Safety boundary (unchanged from the rest of the app): a folder rule may
 //  target any subpath of a container except the container root itself and
 //  the top-level Documents / Library; extension and name rules only ever
 //  touch Library/Caches + tmp (cl_clean_matching_files enforces that).
 //  Deleting an app's data (Documents/Library) stays the backup-first
 //  "清空数据" flow in CLAppActions — custom rules never do it.
-//  Rule/preset research: docs/GITHUB-RESEARCH-v2.3.md §4.
+//  Rule/preset research: docs/GITHUB-RESEARCH-v2.3.md §4,
+//  directory-picker research: docs/GITHUB-RESEARCH-v2.5.md §2–§3
+//  (BleachBit Custom tab, SD Maid SE custom filters, Filza drill-down).
 //
 
 #import <Foundation/Foundation.h>
@@ -36,6 +45,18 @@ extern NSString *const CLCustomRuleMaxSizeKey;     // NSNumber bytes: only files
 extern NSString *const CLCustomRuleSubfolderKey;   // NSString: only under this subfolder
                                                    // (e.g. "Library/Caches/com.foo", or a bare
                                                    // name = a subfolder of Library/Caches)
+// v2.5 directory rules (kind @"directory", picked in CLRulePickerViewController):
+// pattern = the container-relative directory path (e.g. "Library/Caches/xxx"
+// or "Documents/Downloads"). scope = @"all" (purge the whole directory's
+// contents, like a folder rule) or @"filtered" (delete only files matching
+// the conditions below, inside that directory). A filtered rule must carry
+// at least one condition; a scope-all rule must carry none (refused, never
+// silently ignored — the v2.4 folder-rule principle).
+extern NSString *const CLCustomRuleScopeKey;       // @"all" | @"filtered"
+extern NSString *const CLCustomRuleScopeAll;       // @"all"
+extern NSString *const CLCustomRuleScopeFiltered;  // @"filtered"
+extern NSString *const CLCustomRuleExtensionsKey;  // NSString CSV, e.g. ".mp4,.mov"
+extern NSString *const CLCustomRuleNameKey;        // NSString filename substring
 
 // Preset dictionary keys (from cl_custom_clean_presets).
 extern NSString *const CLCustomPresetTitleKey;
@@ -59,6 +80,32 @@ NSDictionary *cl_custom_clean_make_rule(NSString *bundleID, NSString *kind, NSSt
 NSDictionary *cl_custom_clean_make_rule_full(NSString *bundleID, NSString *kind, NSString *pattern,
                                              NSNumber *_Nullable minAgeDays, NSNumber *_Nullable minSize,
                                              NSNumber *_Nullable maxSize, NSString *_Nullable subfolder);
+
+// One new directory rule (v2.5): the directory was picked in the picker.
+// scope @"all" ignores the conditions (pass nil); scope @"filtered" needs
+// at least one condition (extensions CSV, name substring, age, size).
+NSDictionary *cl_custom_clean_make_directory_rule(NSString *bundleID, NSString *pattern, NSString *scope,
+                                                  NSString *_Nullable extensionsCSV, NSString *_Nullable name,
+                                                  NSNumber *_Nullable minAgeDays, NSNumber *_Nullable minSize,
+                                                  NSNumber *_Nullable maxSize);
+
+// Resolve a pasted/typed directory path to an app + container-relative
+// path. Accepts an absolute path (e.g. copied from the directory view's
+// "复制路径": the container it belongs to is found among the scanned apps)
+// or a relative path under the given app (bundleID may be nil when the
+// path is absolute). NO with *reason when the path belongs to no scanned
+// app, escapes the container, or is the container root itself.
+// The out params are only set on YES.
+BOOL cl_custom_clean_resolve_pasted_path(NSString *path, NSArray<CLCacheItem *> *apps,
+                                        NSString *_Nullable bundleID,
+                                        NSString *_Nullable *_Nullable bundleIDOut,
+                                        NSString *_Nullable *_Nullable relativeOut,
+                                        NSString *_Nullable *_Nullable reason);
+
+// Split an extensions CSV (".mp4,.mov" — commas, Chinese commas and spaces
+// all separate) into a normalized array (each starts with ".", lowercased).
+// Empty entries are dropped; an empty result is an empty array, not nil.
+NSArray<NSString *> *cl_custom_clean_parse_extensions(NSString *_Nullable csv);
 
 // Human-readable one-line summary of a rule, e.g.
 // "全部应用 · 扩展 .mp4" / "微信 · 文件夹 Library/Caches/xxx".
@@ -111,5 +158,12 @@ void cl_custom_clean_dry_run(NSArray<CLCacheItem *> *apps, NSDictionary *rule,
 void cl_custom_clean_run_one_rule(NSArray<CLCacheItem *> *apps, NSDictionary *rule,
                                   CLCustomCleanProgress _Nullable progress,
                                   void (^completion)(NSDictionary *result));
+
+#ifdef CL_ACCESS_TESTING
+// Tests only: redirect the rules plist (default: our Caches directory).
+// Lets the regression tests exercise save/load/edit/delete without
+// touching the real plist.
+void cl_custom_clean_set_plist_path_for_testing(NSString *_Nullable path);
+#endif
 
 NS_ASSUME_NONNULL_END

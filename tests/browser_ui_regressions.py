@@ -226,15 +226,18 @@ require(home, '"iPhone18,2": @"iPhone 17 Pro Max"', "correct 18,2 mapping")
 require(home, '"iPhone18,3": @"iPhone 17"', "correct 18,3 mapping")
 forbid(home, '"iPhone18,1": @"iPhone 17"', "swapped 18,1 mapping (v2.2)")
 
-# --- App count after cleaning (v2.3 bug, v2.4 fix): the home count is
-# DISTINCT APPS (Application containers only), not the rows left after
-# dropping sub-64 KB apps and not every container measured — v2.3 counted
-# PluginKitPlugin extension containers too and showed 1226.
+# --- App count after cleaning (v2.3 bug, v2.4 fix attempt, v2.5 real fix):
+# the home count is DISTINCT BUNDLE IDs, not containers. v2.3 counted
+# PluginKitPlugin extension containers (1226); v2.4 counted Application
+# containers only, but one app has a Bundle container AND a Data container,
+# so the 20:46 screenshot still showed 267. v2.5 keeps a NSMutableSet of
+# bundle IDs and reports its count — it must equal the clean-list item
+# count (114 on the user's phone) and stay after cleaning.
 require(cache, "totalAppCount", "store keeps the total distinct apps")
+require(cache, "appBundleIDs", "scanner collects distinct bundle IDs")
 require(cache, "totalApps:(NSUInteger)totalApps", "scanner reports the measured app count")
 require(cache, "ctx.totalContainers++", "every measured container is counted (progress)")
-require(cache, "ctx.totalAppContainers++", "only Application containers count as apps")
-require(cache, "totalAppContainers", "scanner reports distinct apps, not containers")
+forbid(cache, "totalAppContainers", "container counting is gone (v2.4 bug: 267)")
 require(home, "store.totalAppCount", "home shows the measured total, not the row count")
 require(cleaner, "totalApps:totalApps", "cleaner passes the total through")
 
@@ -335,9 +338,7 @@ require(custom, "cl_clean_matching_files_filtered", "filtered match engine")
 require(cache, "CLCleanMatchOptions", "filter options struct")
 require(cache, "CLCleanMatchResult", "per-item accounting struct")
 require(custom_vc, "预览匹配", "rule preview action")
-require(custom_vc, "筛选（可选）", "filter fields in the add-rule flow")
 require(custom_vc, "清理这些文件", "dry-run confirm button")
-require(custom_vc, "跳过", "filters are optional")
 
 # --- iPhone Shortcuts (v2.4): the App Intent lives in the MAIN APP
 # target, not in an extension. With openAppWhenRun = false, iOS
@@ -368,7 +369,24 @@ require(build, "-framework AppIntents", "AppIntents framework linked")
 require(build, "Intents/CleanerIntents.swift", "Swift intent source in the build")
 require(build, "Core/CLBackgroundClean.m", "background clean in the build")
 require(build, "CleanerIntents.o", "Swift object linked into the app binary")
-require(build, "CleanCacheIntent", "build validates the intent survives dead-strip")
+# v2.5: the v2.4 check that used to sit here was FAKE — it only grepped
+# build.sh text for "CleanCacheIntent", and build.sh itself only grepped
+# the BINARY for the bare name, which survives dead-strip. The verified
+# v2.4 binary had 1 bare name string each and ZERO mangled symbols /
+# ZERO appShortcuts, and the Shortcuts app found nothing. The real
+# checks: build.sh greps the binary for the Swift-mangled symbols
+# ($s…V) and the appShortcuts witness, and the guide page reads the
+# registered shortcuts through CLCleanerShortcutsInfo — a real data flow
+# the optimizer cannot delete (keepAlive alone could not: it only
+# referenced the type metadata, which -O + LTO threw away).
+require(build, "[$]s[0-9]+CleanerIntents[0-9]+CleanCacheIntentV", "build checks the mangled CleanCacheIntent symbol")
+require(build, "[$]s[0-9]+CleanerIntents[0-9]+CleanerShortcutsV", "build checks the mangled CleanerShortcuts symbol")
+require(build, "appShortcuts", "build checks the appShortcuts witness in the binary")
+forbid(build, 'grep -a -q "CleanCacheIntent" "$app_path/Cleaner"', "bare-name grep is gone (it passed on the broken v2.4 binary)")
+forbid(build, 'grep -a -q "CleanerShortcuts" "$app_path/Cleaner"', "bare-name grep is gone (it passed on the broken v2.4 binary)")
+forbid(build, "# no -dead_strip risk here — main.m references CLIntentsBootstrap, which references the intent types.", "the wrong dead-strip comment is gone")
+require(intents, "CLCleanerShortcutsInfo", "shortcuts info exposes the registered shortcuts to UIKit")
+require(intents, "CleanerShortcuts.appShortcuts", "intent types are really used: the guide reads the registered shortcuts")
 require(main, "[CLIntentsBootstrap keepAlive]", "main keeps the intent types linked")
 require(main, "CleanerIntents-Swift.h", "main imports the generated Swift header")
 forbid(build, "appex", "no app-extension target")
@@ -382,10 +400,63 @@ require(tabbar, 'isEqualToString:@"cleaner"', "cleaner:// scheme check")
 require(settings, "快捷指令", "shortcuts guide in Settings")
 require(settings, "cleaner://clean", "clean URL in Settings")
 require(settings, "cleaner://scan", "scan URL in Settings")
-require(settings, "不需要服务器", "no-server note in Settings")
 require(settings, "不打开应用", "background shortcut copy in Settings")
 require(settings, "清理全部缓存", "intent name in Settings")
 require(cleaner, "startShortcutAction", "cleaner page shortcut entry point")
+
+# --- Shortcuts guide (v2.5): the user could not find the shortcut at all
+# (20:44 screenshot: search "cleaner" in the Shortcuts app → 0 results;
+# 20:46: the phone really runs v0.2.4 (1), already opened, still 0 — "not
+# installed / never opened" are both ruled out. Root cause, verified on
+# the v2.4 binary: -dead_strip deleted the intent types; keepAlive only
+# referenced their metadata). The guide page states the preconditions
+# first (install 0.2.5, open Cleaner once, let the system index, then
+# search), shows a LIVE status read from the real registration (not a
+# hardcoded string), and has a button that opens the Shortcuts app.
+# "Not found" is NOT reported as fixed until the user finds it on-device
+# and taps it once.
+guide = read(APP / "CLShortcutsGuideViewController.m")
+require(guide, "shortcutTitles", "guide shows the registered shortcut titles")
+require(guide, "cl-ui-launched-once", "guide shows whether the app was launched once")
+require(guide, "shortcuts://", "button opens the Shortcuts app")
+require(guide, "先装 0.2.5", "precondition: install 0.2.5 first")
+require(guide, "打开一次 Cleaner", "precondition: open Cleaner once so the system indexes")
+require(guide, "重启手机", "fallback: restart the phone to re-index")
+require(guide, "不需要服务器", "no-server note in the guide")
+require(settings, "CLShortcutsGuideViewController", "Settings opens the guide page")
+require(main, "cl-ui-launched-once", "scene launch marks the app as launched once")
+
+# --- Directory picker for custom rules (v2.5): tap 添加规则 opens a NEW
+# page (BleachBit's Custom tab + file picker; SD Maid SE's custom-filter
+# structure; Filza drill-down). Pick an app, drill into its container,
+# choose the scope for the directory shown, confirm with 选择 at the top
+# right — the rule joins future cleans (clean page AND the background
+# intent). A path can also be typed/pasted. The system file picker cannot
+# reach other apps' containers, so the drill-down is in-app.
+picker = read(APP / "CLRulePickerViewController.m")
+require(picker, "选择目录", "picker page")
+require(picker, "清空整个目录", "scope: clear the whole directory")
+require(picker, "按条件删", "scope: delete by conditions")
+require(picker, "手动输入路径", "manual path entry")
+require(picker, "前往", "go to a pasted path")
+require(picker, "不能直接选容器根目录", "container root refused")
+require(picker, "这个目录不是缓存目录", "user-data warning before confirming")
+require(picker, "initWithRule", "edit reopens the picker prefilled")
+require(picker, "cl_custom_clean_resolve_pasted_path", "pasted path resolves to app + relative path")
+require(picker, "cl_custom_clean_make_directory_rule", "picker saves a directory rule")
+require(custom_vc, "CLRulePickerViewController", "add rule opens the picker")
+require(custom_vc, "编辑这条规则", "directory rules can be edited")
+require(custom, "cl_custom_clean_make_directory_rule", "directory-rule constructor")
+require(custom, "CLCustomRuleScopeAll", "directory scope: all")
+require(custom, "CLCustomRuleScopeFiltered", "directory scope: filtered")
+require(custom, "rootsMayBeAnywhere", "filtered walk lifts the Caches/tmp roots restriction")
+require(custom, "cl_custom_clean_resolve_pasted_path", "pasted-path resolution in the engine")
+
+# --- Mode line (v2.5): v2.1's 15pt + max 2 lines did not stop the
+# mid-word break ("<App Group> [沙 / 盒模式]" on the 20:46 screenshot).
+# The copy is now just "沙盒模式" — short enough to never break.
+require(home, "沙盒模式", "mode line is short")
+forbid(home, '@"<App Group> [沙盒模式]"', "old mode line that broke mid-word")
 
 # --- Animations (v2.3, redone): scan batches insert with a fade, the
 # progress bar shows the real scan fraction, cleaning shows a per-row
@@ -407,7 +478,7 @@ require(main, "cl_set_container_label_resolver", "container label resolver")
 require(main, "cl_set_container_list_provider", "container list provider")
 require(main, "cl_recover_interrupted_restore", "interrupted restore recovery")
 
-# --- Build: only the v2 sources, iPhone only, 0.2.4. ---
+# --- Build: only the v2 sources, iPhone only, 0.2.5. ---
 for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.m",
                "Core/CLLaunchServices.m", "Core/CLCustomClean.m", "Core/CLBackgroundClean.m",
                "App/CLUI.m",
@@ -415,12 +486,13 @@ for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.
                "App/CLCustomCleanViewController.m", "App/CLAppActions.m",
                "App/CLAppDirectoryViewController.m", "App/CLHomeViewController.m",
                "App/CLSettingsViewController.m", "App/CLLogViewController.m",
+               "App/CLRulePickerViewController.m", "App/CLShortcutsGuideViewController.m",
                "App/CLTabBarController.m", "App/main.m"):
     require(build, source, f"build source {source}")
 forbid(build, "WQCore.m", "v0.1 build source")
 require(build, "-Os -flto -dead_strip", "size optimisation flags")
-require(info, "<string>0.2.4</string>", "version 0.2.4")
-forbid(info, "<string>0.2.3</string>", "old version 0.2.3")
+require(info, "<string>0.2.5</string>", "version 0.2.5")
+forbid(info, "<string>0.2.4</string>", "old version 0.2.4")
 forbid(info, "CFBundleIcons~ipad", "iPad icon set")
 forbid(info, "UISupportedInterfaceOrientations~ipad", "iPad orientations")
 

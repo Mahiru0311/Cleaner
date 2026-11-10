@@ -18,13 +18,27 @@ NSString *const CLCustomRuleMaxSizeKey = @"maxSize";        // NSNumber bytes: o
 NSString *const CLCustomRuleSubfolderKey = @"subfolder";    // NSString: only under this subfolder
                                                             // (e.g. "Library/Caches/com.foo", or a bare
                                                             // name = a subfolder of Library/Caches)
+// v2.5 directory rules:
+NSString *const CLCustomRuleScopeKey = @"scope";
+NSString *const CLCustomRuleScopeAll = @"all";
+NSString *const CLCustomRuleScopeFiltered = @"filtered";
+NSString *const CLCustomRuleExtensionsKey = @"extensions";  // NSString CSV, e.g. ".mp4,.mov"
+NSString *const CLCustomRuleNameKey = @"name";              // NSString filename substring
 
 NSString *const CLCustomPresetTitleKey = @"title";
 NSString *const CLCustomPresetDetailKey = @"detail";
 NSString *const CLCustomPresetRulesKey = @"rules";
 
+#ifdef CL_ACCESS_TESTING
+static NSString *cl_custom_clean_plist_override = nil;
+void cl_custom_clean_set_plist_path_for_testing(NSString *path) { cl_custom_clean_plist_override = [path copy]; }
+#endif
+
 static NSString *cl_custom_clean_plist_path(void)
 {
+#ifdef CL_ACCESS_TESTING
+    if (cl_custom_clean_plist_override.length) return cl_custom_clean_plist_override;
+#endif
     NSString *dir = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
     return dir.length ? [dir stringByAppendingPathComponent:@"cl-custom-rules.plist"] : nil;
 }
@@ -94,6 +108,106 @@ NSDictionary *cl_custom_clean_make_rule_full(NSString *bundleID, NSString *kind,
     return [rule copy];
 }
 
+// v2.5: one directory rule. scope @"all" takes no conditions; scope
+// @"filtered" takes at least one (validated by cl_custom_clean_validate_rule).
+NSDictionary *cl_custom_clean_make_directory_rule(NSString *bundleID, NSString *pattern, NSString *scope,
+                                                  NSString *extensionsCSV, NSString *name,
+                                                  NSNumber *minAgeDays, NSNumber *minSize,
+                                                  NSNumber *maxSize)
+{
+    NSMutableDictionary *rule = [@{ CLCustomRuleIDKey: NSUUID.UUID.UUIDString,
+                                    CLCustomRuleBundleIDKey: bundleID.length ? bundleID : @"*",
+                                    CLCustomRuleKindKey: @"directory",
+                                    CLCustomRulePatternKey: pattern,
+                                    CLCustomRuleScopeKey: scope.length ? scope : CLCustomRuleScopeAll,
+                                    CLCustomRuleEnabledKey: @YES } mutableCopy];
+    if (extensionsCSV.length) rule[CLCustomRuleExtensionsKey] = extensionsCSV;
+    if (name.length) rule[CLCustomRuleNameKey] = name;
+    if (minAgeDays) rule[CLCustomRuleMinAgeDaysKey] = minAgeDays;
+    if (minSize) rule[CLCustomRuleMinSizeKey] = minSize;
+    if (maxSize) rule[CLCustomRuleMaxSizeKey] = maxSize;
+    return [rule copy];
+}
+
+// Split an extensions CSV on commas (half-width, full-width) and spaces;
+// each entry is trimmed, lowercased, and given a leading "." when missing.
+NSArray<NSString *> *cl_custom_clean_parse_extensions(NSString *csv)
+{
+    if (!csv.length) return @[];
+    NSCharacterSet *separators = [NSCharacterSet characterSetWithCharactersInString:@",， \t\n"];
+    NSMutableArray<NSString *> *out = [NSMutableArray new];
+    for (NSString *part in [csv componentsSeparatedByCharactersInSet:separators]) {
+        NSString *ext = [part stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (!ext.length) continue;
+        if (![ext hasPrefix:@"."]) ext = [@"." stringByAppendingString:ext];
+        ext = ext.lowercaseString;
+        if (![out containsObject:ext]) [out addObject:ext];
+    }
+    return [out copy];
+}
+
+// Resolve a pasted/typed directory path to an app + container-relative
+// path. An absolute path (the directory view's "复制路径" copies one) is
+// matched against the scanned apps' containers; a relative path is
+// resolved under the given app. The container root itself ("", ".", or the
+// container path) is refused — a rule must target a subdirectory.
+BOOL cl_custom_clean_resolve_pasted_path(NSString *path, NSArray<CLCacheItem *> *apps,
+                                        NSString *bundleID,
+                                        NSString **bundleIDOut,
+                                        NSString **relativeOut,
+                                        NSString **reason)
+{
+    NSString *trimmed = [path stringByTrimmingCharactersInSet:
+                         NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!trimmed.length) {
+        if (reason) *reason = @"路径为空";
+        return NO;
+    }
+    if (trimmed.isAbsolutePath) {
+        NSString *std = [trimmed stringByStandardizingPath];
+        // Longest container prefix wins (containers never nest, but a
+        // group container could share a prefix with an app container).
+        CLCacheItem *best = nil;
+        for (CLCacheItem *app in apps) {
+            if (app.crashLogs || !app.containerPath.length) continue;
+            NSString *container = [app.containerPath stringByStandardizingPath];
+            if ([std isEqualToString:container] || [std hasPrefix:[container stringByAppendingString:@"/"]]) {
+                if (!best || container.length > best.containerPath.length) best = app;
+            }
+        }
+        if (!best) {
+            if (reason) *reason = @"这条路径不属于任何已扫描应用的容器（请先去清理页扫描一次）";
+            return NO;
+        }
+        NSString *container = [best.containerPath stringByStandardizingPath];
+        if ([std isEqualToString:container]) {
+            if (reason) *reason = @"不能直接选容器根目录，请选里面的一个子目录";
+            return NO;
+        }
+        if (bundleIDOut) *bundleIDOut = best.bundleID;
+        if (relativeOut) *relativeOut = [std substringFromIndex:container.length + 1];
+        return YES;
+    }
+    if (!bundleID.length) {
+        if (reason) *reason = @"相对路径需要先选一个应用";
+        return NO;
+    }
+    NSString *std = [trimmed stringByStandardizingPath];
+    for (NSString *component in std.pathComponents) {
+        if ([component isEqualToString:@"."] || [component isEqualToString:@".."]) {
+            if (reason) *reason = @"路径不能包含 . 或 ..";
+            return NO;
+        }
+    }
+    if ([std isEqualToString:@"."] || !std.length) {
+        if (reason) *reason = @"不能直接选容器根目录，请选里面的一个子目录";
+        return NO;
+    }
+    if (bundleIDOut) *bundleIDOut = bundleID;
+    if (relativeOut) *relativeOut = std;
+    return YES;
+}
+
 NSArray<NSDictionary *> *cl_custom_clean_presets(void)
 {
     NSMutableArray *presets = [NSMutableArray new];
@@ -136,9 +250,35 @@ NSString *cl_custom_clean_rule_summary(NSDictionary *rule)
     NSString *app = [bid isEqualToString:@"*"] ? @"全部应用" : (cl_display_name(bid) ?: bid);
     NSString *kind = rule[CLCustomRuleKindKey];
     NSString *pattern = rule[CLCustomRulePatternKey] ?: @"";
-    NSString *what = [kind isEqualToString:@"folder"] ? [NSString stringWithFormat:@"文件夹 %@", pattern]
-        : [kind isEqualToString:@"extension"] ? [NSString stringWithFormat:@"扩展 %@", pattern]
-        : [NSString stringWithFormat:@"文件名含 %@", pattern];
+    NSString *what;
+    if ([kind isEqualToString:@"folder"]) {
+        what = [NSString stringWithFormat:@"文件夹 %@", pattern];
+    } else if ([kind isEqualToString:@"directory"]) {
+        // v2.5: "微信 · 目录 Library/Caches/xxx（全部）" or
+        // "微信 · 目录 … · 扩展 .mp4,.mov · 名字含 thumb · 30天前".
+        NSString *scope = rule[CLCustomRuleScopeKey];
+        what = [NSString stringWithFormat:@"目录 %@（%@）", pattern,
+                [scope isEqualToString:CLCustomRuleScopeFiltered] ? @"按条件" : @"全部"];
+        NSString *exts = rule[CLCustomRuleExtensionsKey];
+        if (exts.length) what = [what stringByAppendingFormat:@" · 扩展 %@", exts];
+        NSString *name = rule[CLCustomRuleNameKey];
+        if (name.length) what = [what stringByAppendingFormat:@" · 名字含 %@", name];
+        NSMutableString *s = [NSMutableString stringWithFormat:@"%@ · %@", app, what];
+        NSNumber *age = rule[CLCustomRuleMinAgeDaysKey];
+        if (age) [s appendFormat:@" · %@天前", age];
+        NSNumber *minSize = rule[CLCustomRuleMinSizeKey];
+        if (minSize && minSize.unsignedLongLongValue > 0)
+            [s appendFormat:@" · >%@", cl_custom_clean_size_text(minSize.unsignedLongLongValue)];
+        NSNumber *maxSize = rule[CLCustomRuleMaxSizeKey];
+        if (maxSize && maxSize.unsignedLongLongValue > 0)
+            [s appendFormat:@" · <%@",
+             cl_custom_clean_size_text(maxSize.unsignedLongLongValue)];
+        return [s copy];
+    } else if ([kind isEqualToString:@"extension"]) {
+        what = [NSString stringWithFormat:@"扩展 %@", pattern];
+    } else {
+        what = [NSString stringWithFormat:@"文件名含 %@", pattern];
+    }
     NSMutableString *s = [NSMutableString stringWithFormat:@"%@ · %@", app, what];
     NSNumber *age = rule[CLCustomRuleMinAgeDaysKey];
     if (age) [s appendFormat:@" · %@天前", age];
@@ -220,35 +360,9 @@ static NSArray<NSString *> *cl_custom_clean_roots_for_subfolder(NSString *sub)
     return @[cl_custom_clean_resolve_subfolder(sub)];
 }
 
-// Validate a whole rule: kind + pattern + every filter. Folder rules
-// purge a whole folder's contents, so age/size/subfolder filters do not
-// apply to them and are refused rather than silently ignored.
-BOOL cl_custom_clean_validate_rule(NSDictionary *rule, NSString **reason)
+// Age/size sanity, shared by extension, name and directory rules.
+static BOOL cl_custom_clean_validate_age_size(NSDictionary *rule, NSString **reason)
 {
-    NSString *kind = rule[CLCustomRuleKindKey];
-    NSString *pattern = rule[CLCustomRulePatternKey] ?: @"";
-    if (![kind isEqualToString:@"folder"] && ![kind isEqualToString:@"extension"] &&
-        ![kind isEqualToString:@"name"]) {
-        if (reason) *reason = @"规则类型不对（应为 folder / extension / name）";
-        return NO;
-    }
-    if ([kind isEqualToString:@"folder"]) {
-        if (!cl_custom_clean_validate_folder_pattern(pattern, reason)) return NO;
-        if (rule[CLCustomRuleMinAgeDaysKey] || rule[CLCustomRuleMinSizeKey] ||
-            rule[CLCustomRuleMaxSizeKey] || rule[CLCustomRuleSubfolderKey]) {
-            if (reason) *reason = @"文件夹规则不支持年龄/大小/子目录筛选";
-            return NO;
-        }
-        return YES;
-    }
-    if (!pattern.length) {
-        if (reason) *reason = @"匹配内容为空";
-        return NO;
-    }
-    if ([pattern containsString:@"/"] || [pattern containsString:@".."]) {
-        if (reason) *reason = @"扩展名/文件名不能包含 / 或 ..";
-        return NO;
-    }
     NSNumber *age = rule[CLCustomRuleMinAgeDaysKey];
     if (age && (age.doubleValue < 0 || age.doubleValue > 3650)) {
         if (reason) *reason = @"保留天数应在 0–3650 天之间";
@@ -269,6 +383,85 @@ BOOL cl_custom_clean_validate_rule(NSDictionary *rule, NSString **reason)
         if (reason) *reason = @"最小大小不能大于最大大小";
         return NO;
     }
+    return YES;
+}
+
+// Validate a whole rule: kind + pattern + every filter. Folder rules
+// purge a whole folder's contents, so age/size/subfolder filters do not
+// apply to them and are refused rather than silently ignored.
+BOOL cl_custom_clean_validate_rule(NSDictionary *rule, NSString **reason)
+{
+    NSString *kind = rule[CLCustomRuleKindKey];
+    NSString *pattern = rule[CLCustomRulePatternKey] ?: @"";
+    if (![kind isEqualToString:@"folder"] && ![kind isEqualToString:@"extension"] &&
+        ![kind isEqualToString:@"name"] && ![kind isEqualToString:@"directory"]) {
+        if (reason) *reason = @"规则类型不对（应为 folder / extension / name / directory）";
+        return NO;
+    }
+    if ([kind isEqualToString:@"folder"]) {
+        if (!cl_custom_clean_validate_folder_pattern(pattern, reason)) return NO;
+        if (rule[CLCustomRuleMinAgeDaysKey] || rule[CLCustomRuleMinSizeKey] ||
+            rule[CLCustomRuleMaxSizeKey] || rule[CLCustomRuleSubfolderKey]) {
+            if (reason) *reason = @"文件夹规则不支持年龄/大小/子目录筛选";
+            return NO;
+        }
+        return YES;
+    }
+    if ([kind isEqualToString:@"directory"]) {
+        // v2.5: the directory was picked in the picker. The pattern is a
+        // container-relative directory path (container root, Documents and
+        // Library themselves are refused by the folder-pattern check).
+        if (!cl_custom_clean_validate_folder_pattern(pattern, reason)) return NO;
+        NSString *scope = rule[CLCustomRuleScopeKey];
+        if (!scope.length) scope = CLCustomRuleScopeAll;
+        if (![scope isEqualToString:CLCustomRuleScopeAll] &&
+            ![scope isEqualToString:CLCustomRuleScopeFiltered]) {
+            if (reason) *reason = @"规则范围不对（应为全部或按条件）";
+            return NO;
+        }
+        if (rule[CLCustomRuleSubfolderKey]) {
+            if (reason) *reason = @"目录规则本身就是一个目录，不需要再加子目录";
+            return NO;
+        }
+        NSString *exts = rule[CLCustomRuleExtensionsKey];
+        NSString *name = rule[CLCustomRuleNameKey];
+        BOOL hasCondition = exts.length > 0 || name.length > 0 ||
+            rule[CLCustomRuleMinAgeDaysKey] || rule[CLCustomRuleMinSizeKey] ||
+            rule[CLCustomRuleMaxSizeKey];
+        if ([scope isEqualToString:CLCustomRuleScopeAll]) {
+            if (hasCondition) {
+                if (reason) *reason = @"清空整个目录的规则不能再加筛选条件";
+                return NO;
+            }
+            return YES;
+        }
+        // Filtered scope: at least one condition, and each one sane.
+        if (!hasCondition) {
+            if (reason) *reason = @"按条件删至少要设一个条件（扩展名、文件名、年龄或大小）";
+            return NO;
+        }
+        if (exts.length) {
+            NSArray<NSString *> *parsed = cl_custom_clean_parse_extensions(exts);
+            if (!parsed.count) {
+                if (reason) *reason = @"扩展名填得不对（例如 .mp4,.mov）";
+                return NO;
+            }
+        }
+        if (name.length && ([name containsString:@"/"] || [name containsString:@".."])) {
+            if (reason) *reason = @"文件名不能包含 / 或 ..";
+            return NO;
+        }
+        return cl_custom_clean_validate_age_size(rule, reason);
+    }
+    if (!pattern.length) {
+        if (reason) *reason = @"匹配内容为空";
+        return NO;
+    }
+    if ([pattern containsString:@"/"] || [pattern containsString:@".."]) {
+        if (reason) *reason = @"扩展名/文件名不能包含 / 或 ..";
+        return NO;
+    }
+    if (!cl_custom_clean_validate_age_size(rule, reason)) return NO;
     NSString *sub = rule[CLCustomRuleSubfolderKey];
     if (sub.length && !cl_custom_clean_validate_subfolder(sub, reason)) return NO;
     return YES;
@@ -314,7 +507,11 @@ static NSDictionary *cl_custom_clean_apply_rule(NSArray<CLCacheItem *> *apps, NS
         if ([excludedApps containsObject:app.bundleID]) continue;
         NSString *container = app.containerPath;
         NSUInteger matchedBefore = matched;
-        if ([kind isEqualToString:@"folder"]) {
+        if ([kind isEqualToString:@"folder"] ||
+            ([kind isEqualToString:@"directory"] &&
+             ![rule[CLCustomRuleScopeKey] isEqualToString:CLCustomRuleScopeFiltered])) {
+            // Folder rules, and directory rules with scope "all" (absent
+            // scope also means all): purge the whole directory's contents.
             if (!cl_custom_clean_validate_folder_pattern(pattern, &reason)) { failed++; continue; }
             if ([excludedFolders containsObject:pattern]) continue;
             if (cl_custom_clean_folder_is_user_data(pattern)) {
@@ -349,6 +546,50 @@ static NSDictionary *cl_custom_clean_apply_rule(NSArray<CLCacheItem *> *apps, NS
                     matchedBytes += removed;
                 }
             }
+        } else if ([kind isEqualToString:@"directory"]) {
+            // v2.5: directory rule, scope "filtered" — delete only files
+            // matching the conditions inside that one directory. The walk
+            // is the same fd-based no-follow walk as extension rules, but
+            // rooted at the picked directory (rootsMayBeAnywhere: the rule
+            // was validated, and the directory may be anywhere inside the
+            // container, e.g. Documents/Downloads).
+            if (!cl_custom_clean_validate_folder_pattern(pattern, &reason)) { failed++; continue; }
+            if ([excludedFolders containsObject:pattern]) continue;
+            if (cl_custom_clean_folder_is_user_data(pattern)) {
+                NSString *w = [NSString stringWithFormat:@"%@（%@）不是缓存目录，已按规则清理",
+                               pattern, app.name];
+                if (![warnings containsObject:w]) [warnings addObject:w];
+            }
+            NSArray<NSString *> *exts = cl_custom_clean_parse_extensions(rule[CLCustomRuleExtensionsKey]);
+            NSString *name = rule[CLCustomRuleNameKey];
+            NSNumber *ageDays = rule[CLCustomRuleMinAgeDaysKey];
+            NSNumber *minSize = rule[CLCustomRuleMinSizeKey];
+            NSNumber *maxSize = rule[CLCustomRuleMaxSizeKey];
+            CLCleanMatchOptions opts = {
+                .minAgeSeconds = ageDays ? ageDays.doubleValue * 86400.0 : 0,
+                .minSize = minSize ? minSize.unsignedLongLongValue : 0,
+                .maxSize = maxSize ? maxSize.unsignedLongLongValue : 0,
+                .roots = @[pattern],
+                .rootsMayBeAnywhere = YES,
+                .dryRun = dryRun,
+                .cancellation = cancellation,
+            };
+            CLCleanMatchResult r;
+            NSString *walkReason = nil;
+            cl_clean_matching_files_filtered(container, exts.count ? exts : nil,
+                                             name.length ? @[name] : nil,
+                                             excludedFolders, &opts, &r, &walkReason);
+            freed += r.freed;
+            failed += r.failed;
+            skipped += r.skipped;
+            matched += r.matched;
+            matchedBytes += r.matchedBytes;
+            for (NSString *s in r.samplePaths) {
+                if (sample.count < 50) {
+                    [sample addObject:[NSString stringWithFormat:@"%@ · %@", app.name, s]];
+                }
+            }
+            if (walkReason.length) reason = walkReason;
         } else if ([kind isEqualToString:@"extension"] || [kind isEqualToString:@"name"]) {
             NSString *ext = [kind isEqualToString:@"extension"] ? pattern : nil;
             if (ext.length && ![ext hasPrefix:@"."]) ext = [@"." stringByAppendingString:ext];

@@ -25,10 +25,13 @@
 //  re-run is cheap — the measurement cache is warm and the already-clean
 //  apps measure ~0.
 //
-//  CLIntentsBootstrap.keepAlive() is called from main.m: it references
-//  the intent and the shortcuts provider so the linker's -dead_strip
-//  cannot drop them (nothing else in the app references them — the
-//  system discovers them by scanning the binary).
+//  CLIntentsBootstrap.keepAlive() is called from main.m, but keepAlive
+//  alone does NOT keep the types linked (v2.4 lesson): under -O + LTO +
+//  -dead_strip the optimizer deleted the side-effect-free metadata
+//  references and the intent types vanished from the binary. What keeps
+//  them is CLCleanerShortcutsInfo below: the Settings guide reads the
+//  registered shortcuts through it and shows their titles, a real data
+//  flow to UIKit that the optimizer cannot delete.
 
 import AppIntents
 import Foundation
@@ -93,5 +96,31 @@ public final class CLIntentsBootstrap: NSObject {
     @objc public static func keepAlive() {
         _ = CleanCacheIntent.self
         _ = CleanerShortcuts.self
+    }
+}
+
+// v2.5 — the REAL reason the intent types survive the linker, not
+// keepAlive: the Settings Shortcuts guide reads the registered shortcuts
+// through this class and shows their titles on screen. keepAlive alone
+// did NOT work: in v2.4 it only wrote `_ = CleanCacheIntent.self`, and
+// under -O + LTO + -dead_strip the optimizer deleted the side-effect-free
+// metadata references and then the types and their protocol conformances
+// entirely — the v2.4 binary had no CleanCacheIntent / CleanerShortcuts
+// symbols at all (only the 8 CLIntentsBootstrap symbols), and the
+// Shortcuts app found nothing. Reading CleanerShortcuts.appShortcuts here
+// and returning the titles to a UIKit label is a genuine data flow the
+// optimizer cannot delete: the provider, its appShortcuts property, the
+// AppShortcut values and the CleanCacheIntent instances inside them must
+// all stay linked. Do not "simplify" this back to a keepAlive-only call.
+@objc(CLCleanerShortcutsInfo)
+public final class CLCleanerShortcutsInfo: NSObject {
+    @objc public static var shortcutCount: Int {
+        CleanerShortcuts.appShortcuts.count
+    }
+    @objc public static var shortcutTitles: [String] {
+        CleanerShortcuts.appShortcuts.compactMap { shortcut in
+            guard let title = shortcut.shortTitle else { return nil }
+            return String(localized: title)
+        }
     }
 }

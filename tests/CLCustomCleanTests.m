@@ -290,6 +290,166 @@ int main(void)
                   [again[@"failed"] unsignedIntegerValue] == 0,
                   @"single-rule idempotent re-run frees 0 with no errors");
 
+            // --- v2.5 directory rules: validation, pasted paths, execution. ---
+            NSString *container4 = [base stringByAppendingPathComponent:@"App-UUID-4"];
+            mkdirs([container4 stringByAppendingPathComponent:@"Library/Caches/videos"]);
+            mkdirs([container4 stringByAppendingPathComponent:@"Library/Caches/other"]);
+            mkdirs([container4 stringByAppendingPathComponent:@"Documents/Downloads"]);
+            mkdirs([container4 stringByAppendingPathComponent:@"tmp"]);
+            put([container4 stringByAppendingPathComponent:@"Library/Caches/videos/a.mp4"], @"12345");
+            put([container4 stringByAppendingPathComponent:@"Library/Caches/videos/b.mov"], @"1234567");
+            put([container4 stringByAppendingPathComponent:@"Library/Caches/videos/c.jpg"], @"123");
+            put([container4 stringByAppendingPathComponent:@"Library/Caches/other/d.mp4"], @"12345");
+            put([container4 stringByAppendingPathComponent:@"Documents/Downloads/e.mp4"], @"12345");
+            put([container4 stringByAppendingPathComponent:@"Documents/Downloads/f.txt"], @"123");
+            put([container4 stringByAppendingPathComponent:@"tmp/g.mp4"], @"12345");
+            CLCacheItem *item4 = [CLCacheItem new];
+            item4.bundleID = @"com.example.four"; item4.name = @"Test4"; item4.containerPath = container4;
+
+            // Validation.
+            NSString *dreason = nil;
+            NSDictionary *dAll = cl_custom_clean_make_directory_rule(@"com.example.four", @"Library/Caches/videos", CLCustomRuleScopeAll, nil, nil, nil, nil, nil);
+            check(cl_custom_clean_validate_rule(dAll, &dreason), @"directory scope-all valid");
+            NSDictionary *dAllBad = cl_custom_clean_make_directory_rule(@"com.example.four", @"Library/Caches/videos", CLCustomRuleScopeAll, @".mp4", nil, nil, nil, nil);
+            check(!cl_custom_clean_validate_rule(dAllBad, &dreason), @"directory scope-all with filters refused");
+            NSDictionary *dNoCond = cl_custom_clean_make_directory_rule(@"com.example.four", @"Library/Caches/videos", CLCustomRuleScopeFiltered, nil, nil, nil, nil, nil);
+            check(!cl_custom_clean_validate_rule(dNoCond, &dreason), @"directory filtered needs at least one condition");
+            NSDictionary *dFilt = cl_custom_clean_make_directory_rule(@"com.example.four", @"Library/Caches/videos", CLCustomRuleScopeFiltered, @".mp4", nil, nil, nil, nil);
+            check(cl_custom_clean_validate_rule(dFilt, &dreason), @"directory filtered with an extension valid");
+            NSDictionary *dDocs = cl_custom_clean_make_directory_rule(@"com.example.four", @"Documents", CLCustomRuleScopeAll, nil, nil, nil, nil, nil);
+            check(!cl_custom_clean_validate_rule(dDocs, &dreason), @"directory rule on Documents itself refused");
+            NSDictionary *dLib = cl_custom_clean_make_directory_rule(@"com.example.four", @"Library", CLCustomRuleScopeAll, nil, nil, nil, nil, nil);
+            check(!cl_custom_clean_validate_rule(dLib, &dreason), @"directory rule on Library itself refused");
+            NSDictionary *dRoot = cl_custom_clean_make_directory_rule(@"com.example.four", @"", CLCustomRuleScopeAll, nil, nil, nil, nil, nil);
+            check(!cl_custom_clean_validate_rule(dRoot, &dreason), @"directory rule on the container root refused");
+            NSDictionary *dBadExt = cl_custom_clean_make_directory_rule(@"com.example.four", @"Library/Caches/videos", CLCustomRuleScopeFiltered, @",,", nil, nil, nil, nil);
+            check(!cl_custom_clean_validate_rule(dBadExt, &dreason), @"directory filtered with a nonsense extensions CSV refused");
+            // Extensions CSV normalization.
+            NSArray<NSString *> *parsed = cl_custom_clean_parse_extensions(@".MP4, mov，.JPG,, .mp4");
+            check([parsed isEqualToArray:@[@".mp4", @".mov", @".jpg"]], @"extensions CSV normalized (case, dots, Chinese comma, deduped)");
+            check(cl_custom_clean_parse_extensions(nil).count == 0, @"nil extensions CSV parses to empty");
+            check(cl_custom_clean_parse_extensions(@",,").count == 0, @"separator-only CSV parses to empty");
+
+            // Pasted-path resolution.
+            NSString *rbid = nil, *rrel = nil, *rreason = nil;
+            check(cl_custom_clean_resolve_pasted_path([container4 stringByAppendingPathComponent:@"Library/Caches/videos"], @[item4], nil, &rbid, &rrel, &rreason) &&
+                  [rbid isEqualToString:@"com.example.four"] && [rrel isEqualToString:@"Library/Caches/videos"],
+                  @"absolute pasted path resolves to app + relative path");
+            check(!cl_custom_clean_resolve_pasted_path([base stringByAppendingPathComponent:@"outside/x"], @[item4], nil, &rbid, &rrel, &rreason),
+                  @"absolute path outside any scanned container refused");
+            check(!cl_custom_clean_resolve_pasted_path(container4, @[item4], nil, &rbid, &rrel, &rreason),
+                  @"absolute container root refused");
+            check(!cl_custom_clean_resolve_pasted_path(@"../outside", @[item4], @"com.example.four", &rbid, &rrel, &rreason),
+                  @"relative path with leading dot-dot refused");
+            check(!cl_custom_clean_resolve_pasted_path(@".", @[item4], @"com.example.four", &rbid, &rrel, &rreason),
+                  @"relative dot (container root) refused");
+            check(cl_custom_clean_resolve_pasted_path(@"Library/Caches/videos", @[item4], @"com.example.four", &rbid, &rrel, &rreason) &&
+                  [rrel isEqualToString:@"Library/Caches/videos"],
+                  @"relative path resolves under the given app");
+            check(!cl_custom_clean_resolve_pasted_path(@"Library/Caches/videos", @[item4], nil, &rbid, &rrel, &rreason),
+                  @"relative path without an app refused");
+
+            // Execution through the real API: scope-all dry-run + run, then
+            // the filtered rule inside Documents/Downloads (rootsMayBeAnywhere).
+            // A scope-all dry-run measures the whole directory: matched is
+            // 1 (one directory), bytes is the total inside it.
+            __block NSDictionary *dry4 = nil;
+            cl_custom_clean_dry_run(@[item4], dAll, nil, ^(NSDictionary *result) {
+                dry4 = result; dispatch_semaphore_signal(sem);
+            });
+            dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            check([dry4[@"matched"] unsignedIntegerValue] == 1 &&
+                  [dry4[@"bytes"] unsignedLongLongValue] == 15,
+                  @"directory scope-all dry-run: 1 directory, 15 bytes");
+            check(has([container4 stringByAppendingPathComponent:@"Library/Caches/videos/a.mp4"]),
+                  @"directory dry-run deletes nothing");
+            __block NSDictionary *run4 = nil;
+            cl_custom_clean_run_one_rule(@[item4], dAll, nil, ^(NSDictionary *result) {
+                run4 = result; dispatch_semaphore_signal(sem);
+            });
+            dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            check([run4[@"freed"] unsignedLongLongValue] == 15 &&
+                  [run4[@"failed"] unsignedIntegerValue] == 0,
+                  @"directory scope-all run frees the whole directory");
+            check(has([container4 stringByAppendingPathComponent:@"Library/Caches/videos"]),
+                  @"directory itself stays after a scope-all run");
+            check(!has([container4 stringByAppendingPathComponent:@"Library/Caches/videos/b.mov"]),
+                  @"directory contents gone after a scope-all run");
+            check(has([container4 stringByAppendingPathComponent:@"Library/Caches/other/d.mp4"]),
+                  @"sibling directory untouched by a scope-all rule");
+            // Filtered rule in Documents/Downloads: only e.mp4 matches, f.txt stays.
+            NSDictionary *dDl = cl_custom_clean_make_directory_rule(@"com.example.four", @"Documents/Downloads", CLCustomRuleScopeFiltered, @".mp4", nil, nil, nil, nil);
+            __block NSDictionary *dryDl = nil;
+            cl_custom_clean_dry_run(@[item4], dDl, nil, ^(NSDictionary *result) {
+                dryDl = result; dispatch_semaphore_signal(sem);
+            });
+            dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            check([dryDl[@"matched"] unsignedIntegerValue] == 1 &&
+                  [dryDl[@"bytes"] unsignedLongLongValue] == 5,
+                  @"directory filtered dry-run inside Documents: 1 file, 5 bytes");
+            __block NSDictionary *runDl = nil;
+            cl_custom_clean_run_one_rule(@[item4], dDl, nil, ^(NSDictionary *result) {
+                runDl = result; dispatch_semaphore_signal(sem);
+            });
+            dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            check([runDl[@"freed"] unsignedLongLongValue] == 5 &&
+                  [runDl[@"failed"] unsignedIntegerValue] == 0,
+                  @"directory filtered run frees only the matching file");
+            check(!has([container4 stringByAppendingPathComponent:@"Documents/Downloads/e.mp4"]),
+                  @"matching file in Documents gone");
+            check(has([container4 stringByAppendingPathComponent:@"Documents/Downloads/f.txt"]),
+                  @"non-matching file in Documents kept");
+            // Idempotent re-run frees 0.
+            __block NSDictionary *again4 = nil;
+            cl_custom_clean_run_one_rule(@[item4], dDl, nil, ^(NSDictionary *result) {
+                again4 = result; dispatch_semaphore_signal(sem);
+            });
+            dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            check([again4[@"freed"] unsignedLongLongValue] == 0 &&
+                  [again4[@"failed"] unsignedIntegerValue] == 0,
+                  @"directory rule idempotent re-run frees 0 with no errors");
+            // rootsMayBeAnywhere unset still refuses a non-Caches/tmp root.
+            CLCleanMatchOptions noAnywhere = { .roots = @[@"Documents/Downloads"] };
+            CLCleanMatchResult naResult;
+            NSString *naReason = nil;
+            check(!cl_clean_matching_files_filtered(container4, @[@".mp4"], nil, nil, &noAnywhere, &naResult, &naReason),
+                  @"rootsMayBeAnywhere unset still refuses Documents");
+
+            // Plist round-trip through the test hook: save → reload → present;
+            // edit keeps the same UUID; disable; delete.
+            NSString *rulesPlist = [base stringByAppendingPathComponent:@"rules.plist"];
+            cl_custom_clean_set_plist_path_for_testing(rulesPlist);
+            cl_custom_clean_save_rules(@[dFilt]);
+            NSArray<NSDictionary *> *loaded = cl_custom_clean_rules();
+            check(loaded.count == 1, @"rules plist round-trip: one rule saved and reloaded");
+            NSDictionary *loadedRule = loaded[0];
+            check([loadedRule[CLCustomRuleBundleIDKey] isEqualToString:@"com.example.four"] &&
+                  [loadedRule[CLCustomRulePatternKey] isEqualToString:@"Library/Caches/videos"] &&
+                  [loadedRule[CLCustomRuleScopeKey] isEqualToString:CLCustomRuleScopeFiltered],
+                  @"reloaded rule keeps bundle, pattern and scope");
+            check(loadedRule[CLCustomRuleIDKey].length > 0, @"reloaded rule has a UUID");
+            check([loadedRule[CLCustomRuleEnabledKey] boolValue], @"new rule is enabled");
+            check([cl_custom_clean_rule_summary(loadedRule) containsString:@"Library/Caches/videos"],
+                  @"rule summary shows the picked directory");
+            // Edit (same UUID, new pattern) — like the picker saving an edited rule.
+            NSString *ruleID = loadedRule[CLCustomRuleIDKey];
+            NSMutableDictionary *edited = [loadedRule mutableCopy];
+            edited[CLCustomRulePatternKey] = @"Library/Caches/other";
+            cl_custom_clean_save_rules(@[edited]);
+            NSArray<NSDictionary *> *reloaded2 = cl_custom_clean_rules();
+            check(reloaded2.count == 1 &&
+                  [reloaded2[0][CLCustomRuleIDKey] isEqualToString:ruleID] &&
+                  [reloaded2[0][CLCustomRulePatternKey] isEqualToString:@"Library/Caches/other"],
+                  @"edit keeps the same UUID and changes the pattern");
+            // Disable, then delete.
+            NSMutableDictionary *disabled = [reloaded2[0] mutableCopy];
+            disabled[CLCustomRuleEnabledKey] = @NO;
+            cl_custom_clean_save_rules(@[disabled]);
+            check(![cl_custom_clean_rules()[0][CLCustomRuleEnabledKey] boolValue],
+                  @"disabled rule stays disabled after reload");
+            cl_custom_clean_save_rules(@[]);
+            check(cl_custom_clean_rules().count == 0, @"deleted rule is gone after reload");
+
             // --- App count after clean-all (v2.3 regression): the store
             // keeps the measured total even when every row is ~0 bytes. ---
             CLCacheItem *app1 = [CLCacheItem new];
@@ -301,7 +461,7 @@ int main(void)
             CLCacheStore *store = [CLCacheStore shared];
             [store updateWithItems:@[app1, app2, logs] limited:NO totalApps:114];
             check(store.appCount == 2, @"appCount counts non-log rows");
-            check(store.totalAppCount == 114, @"totalAppCount is the measured app total (v2.4: Application containers only, not PluginKitPlugin)");
+            check(store.totalAppCount == 114, @"totalAppCount is the measured app total (v2.5: distinct bundle IDs, not containers)");
             check(store.totalBytes == 150, @"totalBytes sums all rows");
             // After a clean-all the scan returns no rows at all (every app
             // is sub-64 KB, so the scanner drops them from the list) — but

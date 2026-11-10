@@ -37,9 +37,25 @@ if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then
         previous=$argument
     done
     test -n "$output"
-    # The stub must carry the markers validate_app checks for (v2.4):
-    # the AppIntents link and the intent types that -dead_strip must keep.
-    printf '#!/bin/sh\n# CleanCacheIntent CleanerShortcuts\n# AppIntents linked\n\nexit 0\n' > "$output"
+    # The stub must carry what validate_app really checks for (v2.5):
+    # the Swift-mangled intent symbols and the appShortcuts witness —
+    # NOT just the bare type names. v2.4's binary kept the bare names
+    # ("CleanCacheIntent", "CleanerShortcuts") while the types were gone,
+    # so a stub with only bare names must FAIL the build. FAKE_DROP_INTENT
+    # simulates exactly that v2.4 outcome: bare names present, mangled
+    # symbols and appShortcuts absent.
+    if [ "${FAKE_DROP_INTENT:-0}" = 1 ]; then
+        printf '#!/bin/sh\n# CleanCacheIntent CleanerShortcuts\n# AppIntents linked\n\nexit 0\n' > "$output"
+    else
+        {
+            printf '#!/bin/sh\n'
+            printf '# %s\n' '$s14CleanerIntents16CleanCacheIntentV'
+            printf '# %s\n' '$s14CleanerIntents16CleanerShortcutsV'
+            printf '# appShortcuts\n'
+            printf '# AppIntents linked\n'
+            printf '\nexit 0\n'
+        } > "$output"
+    fi
     chmod +x "$output"
     exit 0
 fi
@@ -85,8 +101,15 @@ exit 2
 FAKE_OTOOL = r'''#!/bin/sh
 set -eu
 if [ "$1" = "-L" ]; then
-    # validate_app (v2.4) greps this for the AppIntents link.
-    printf '\t/System/Library/Frameworks/AppIntents.framework/AppIntents (compatibility version 1.0.0, current version 1.0.0)\n'
+    # validate_app greps this for the AppIntents link. A real check: read
+    # the binary (last argument) and report the link only if the binary
+    # actually carries the AppIntents marker. The old stub printed the
+    # line unconditionally, so the check passed on any binary at all.
+    last=
+    for argument in "$@"; do last=$argument; done
+    if grep -q "AppIntents" "$last"; then
+        printf '\t/System/Library/Frameworks/AppIntents.framework/AppIntents (compatibility version 1.0.0, current version 1.0.0)\n'
+    fi
     exit 0
 fi
 exit 2
@@ -197,6 +220,28 @@ class StagedBuildTests(unittest.TestCase):
             environment = self._fake_environment(root)
             environment["CLEANER_FINAL_IPA"] = str(final)
             environment["FAKE_DROP_GROUP"] = "1"
+            result = subprocess.run(
+                [str(BUILD)], cwd=ROOT, env=environment,
+                text=True, capture_output=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(final.read_bytes(), original)
+
+    def test_stripped_intent_fails_the_build(self):
+        # v2.5: the v2.4 binary kept the bare intent names but lost the
+        # types to -dead_strip, and the old bare-name grep passed it.
+        # FAKE_DROP_INTENT reproduces that binary (bare names present,
+        # mangled symbols + appShortcuts absent); the build must fail
+        # and leave the existing release untouched.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            final = root / "release" / "Cleaner.ipa"
+            final.parent.mkdir()
+            original = b"previous release bytes"
+            final.write_bytes(original)
+            environment = self._fake_environment(root)
+            environment["CLEANER_FINAL_IPA"] = str(final)
+            environment["FAKE_DROP_INTENT"] = "1"
             result = subprocess.run(
                 [str(BUILD)], cwd=ROOT, env=environment,
                 text=True, capture_output=True, check=False,

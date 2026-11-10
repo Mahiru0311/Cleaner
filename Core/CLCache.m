@@ -386,6 +386,26 @@ BOOL cl_clean_matching_files_filtered(NSString *container, NSArray<NSString *> *
     for (NSString *rel in roots) {
         if ([rel isEqualToString:@"Library/Caches"] || [rel hasPrefix:@"Library/Caches/"] ||
             [rel isEqualToString:@"tmp"] || [rel hasPrefix:@"tmp/"]) continue;
+        // v2.5: a validated directory rule may target any directory inside
+        // the container (e.g. Documents/Downloads); the rule engine, not
+        // this walk, owns that decision. The root must still be a relative
+        // path with no . / .. components — defence in depth, whatever the
+        // caller claimed.
+        if (opts.rootsMayBeAnywhere) {
+            if (rel.isAbsolutePath) {
+                if (reason) *reason = @"规则目录必须是相对路径";
+                return NO;
+            }
+            BOOL bad = NO;
+            for (NSString *component in rel.pathComponents) {
+                if ([component isEqualToString:@"."] || [component isEqualToString:@".."]) bad = YES;
+            }
+            if (bad) {
+                if (reason) *reason = @"规则目录不能包含 . 或 ..";
+                return NO;
+            }
+            continue;
+        }
         if (reason) *reason = @"规则子目录只能在 Library/Caches 或 tmp 之下";
         return NO;
     }
@@ -805,16 +825,19 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
 @property (nonatomic, strong) NSMutableArray<CLCacheItem *> *items;
 @property (nonatomic) NSUInteger completedCount;
 // Every container measured (including sub-64 KB ones that produce no row).
-// The home's app count comes from totalAppContainers, not from this.
+// The home's app count does NOT come from this.
 @property (nonatomic) NSUInteger totalContainers;
-// Distinct APPS measured: containers under Containers/Data/Application
-// only (v2.4). PluginKitPlugin containers (widgets, extensions — about
-// 1100 of them on the user's phone) are measured too, but they are not
-// apps: v2.3 counted every container here and the home showed 1226.
-// One Application container = one app, so this is the clean-list item
-// count (114 on the user's phone) and it survives a clean-all, because
-// enumeration does not depend on cache size.
-@property (nonatomic) NSUInteger totalAppContainers;
+// Distinct APPS measured (v2.5): the set of bundle ids resolved for
+// containers under Containers/Data/Application. PluginKitPlugin containers
+// (widgets, extensions) are measured too, but they are not apps and are
+// never added to this set. v2.4 counted every Application container here
+// and the home showed 267 for 114 apps: one app can own several
+// containers under Data/Application, and most containers are sub-64 KB
+// and produce no row, so a container count is not an app count. The set
+// is keyed by the same resolver the rows use (cl_container_label), so the
+// count equals the clean-list item count (114 on the user's phone) and it
+// survives a clean-all, because enumeration does not depend on cache size.
+@property (nonatomic, strong) NSMutableSet<NSString *> *appBundleIDs;
 @property (nonatomic) NSUInteger deliveredItemCount;
 @property (nonatomic) BOOL scanLimited;
 @property (nonatomic) NSUInteger limitedContainers;
@@ -959,6 +982,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
         ctx.cancellation = cancellation;
         ctx.lock = [NSLock new];
         ctx.items = [NSMutableArray new];
+        ctx.appBundleIDs = [NSMutableSet new];
         ctx.measureStore = [NSMutableDictionary new];
         NSString *cachePath = cl_measure_cache_path();
         NSDictionary *loaded = cachePath ? [NSDictionary dictionaryWithContentsOfFile:cachePath] : nil;
@@ -969,17 +993,17 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
         NSArray *roots = @[@"/private/var/mobile/Containers/Data/Application",
                            @"/private/var/mobile/Containers/Data/PluginKitPlugin"];
         for (NSString *root in roots) {
-            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalAppContainers); return; }
+            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.appBundleIDs.count); return; }
             NSString *kind = [root.lastPathComponent isEqualToString:@"Application"] ? @"应用" : @"扩展";
-            // Only the Application root holds apps — one container per app.
-            // PluginKitPlugin containers are extensions, counted in
-            // totalContainers (progress) but NOT in totalAppContainers.
+            // Only the Application root holds apps. PluginKitPlugin
+            // containers are extensions, counted in totalContainers
+            // (progress) but never added to appBundleIDs.
             BOOL isAppRoot = [root.lastPathComponent isEqualToString:@"Application"];
             NSArray *containers = cl_enumerate(root, 0, cancellation, ^(int64_t done, int64_t total, NSUInteger __unused f) {
                 if (progress) progress([NSString stringWithFormat:@"正在查找%@… %lld%%", kind, (long long)(done * 100 / (total ?: 1))]);
             });
             if (!containers) {
-                if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalAppContainers); return; }
+                if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.appBundleIDs.count); return; }
                 ctx.scanLimited = YES;
                 failedEnumerations++;
                 cl_log(@"cache scan: %@ container enumeration failed", kind);
@@ -1011,7 +1035,18 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
                     if (item) [ctx.items addObject:item];
                     ctx.completedCount++;
                     ctx.totalContainers++;
-                    if (isAppRoot) ctx.totalAppContainers++;
+                    if (isAppRoot) {
+                        // v2.5: the home's app count is DISTINCT BUNDLE
+                        // IDS, not containers. The row already carries its
+                        // bundle id when one was measured; a container too
+                        // small to list (no row) still belongs to an app,
+                        // so its id is resolved here as well. Containers
+                        // that do not resolve to a bundle id are not apps
+                        // and are not counted.
+                        NSString *bid = item.bundleID;
+                        if (!bid.length) bid = cl_container_label(containers[idx]);
+                        if (bid.length) [ctx.appBundleIDs addObject:bid];
+                    }
                     NSUInteger doneInRoot = ctx.completedCount - baseCompleted;
                     // Deliver finished rows in batches of 8 (sorted by
                     // size inside the batch) so the list fills in while
@@ -1034,7 +1069,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
                     }
                 }
             });
-            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalAppContainers); return; }
+            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.appBundleIDs.count); return; }
         }
         unsigned long long crash = 0;
         // Crash logs are in a system group, which worse_query reaches on iOS 27
@@ -1044,7 +1079,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
         CLCacheMeasurementState crashState = !crashReachable ? CLCacheMeasurementMissing
             : safeCrashPath ? CLCacheMeasureDirectory(CLCrashLogsPath, cancellation, &crash)
                             : CLCacheMeasurementLimited;
-        if (crashState == CLCacheMeasurementCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalAppContainers); return; }
+        if (crashState == CLCacheMeasurementCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.appBundleIDs.count); return; }
         if (crashState == CLCacheMeasurementLimited) {
             ctx.scanLimited = YES;
             ctx.limitedMeasurements++;
@@ -1097,7 +1132,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
         cl_log(@"cache scan: %lu items in %.1f s (%lu from the measurement cache)",
                (unsigned long)ctx.items.count, CFAbsoluteTimeGetCurrent() - scanStarted,
                (unsigned long)ctx.measureCacheHits);
-        if (completion) completion([ctx.items copy], ctx.scanLimited, note, NO, ctx.totalAppContainers);
+        if (completion) completion([ctx.items copy], ctx.scanLimited, note, NO, ctx.appBundleIDs.count);
     });
 }
 

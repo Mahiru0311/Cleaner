@@ -68,7 +68,21 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 # the NSDictionary bridging; -parse-as-library stops swiftc synthesising
 # a _main entry point for the file (it is library code — App/main.m owns
 # main, and without the flag the link fails on a duplicate _main).
-# no -dead_strip risk here — main.m references CLIntentsBootstrap, which references the intent types.
+# -dead_strip WARNING (v2.4 lesson, verified on the v2.4 binary): the old
+# comment here said "no -dead_strip risk — main.m references
+# CLIntentsBootstrap, which references the intent types". That was WRONG.
+# keepAlive only wrote `_ = CleanCacheIntent.self` / `_ =
+# CleanerShortcuts.self` — side-effect-free metadata references that -O +
+# LTO deletes, after which -dead_strip removes the types and their
+# protocol conformances entirely. The v2.4 binary had NO CleanCacheIntent /
+# CleanerShortcuts mangled symbols and NO appShortcuts at all (only the 8
+# CLIntentsBootstrap symbols and 1 bare name string each). What keeps the
+# types linked in v2.5 is a REAL data flow, not keepAlive: the Settings
+# Shortcuts guide reads CleanerShortcuts.appShortcuts through
+# CLCleanerShortcutsInfo and shows the titles on screen — the optimizer
+# cannot delete a flow that ends in a UIKit label. keepAlive is kept as
+# a belt-and-braces call, but it is NOT the protection. validate_app
+# below now checks the mangled symbols, not the bare names.
 xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -O -swift-version 5 \
     -parse-as-library -module-name CleanerIntents \
     -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
@@ -84,6 +98,7 @@ xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/Modul
     App/CLUI.m App/CLCleanerViewController.m App/CLAppsViewController.m App/CLCustomCleanViewController.m \
     App/CLAppActions.m App/CLAppDirectoryViewController.m \
     App/CLHomeViewController.m App/CLSettingsViewController.m App/CLLogViewController.m \
+    App/CLRulePickerViewController.m App/CLShortcutsGuideViewController.m \
     App/CLTabBarController.m App/main.m "$OUT/CleanerIntents.o" -o "$APP/Cleaner"
 xcrun --sdk iphoneos strip -x "$APP/Cleaner"
 cp Info.plist "$APP/Info.plist"
@@ -109,15 +124,29 @@ validate_app() {
         fail "unable to inspect signed entitlements"
     [[ "$signed_entitlements" == *"$APP_GROUP"* ]] || \
         fail "signed app is missing required App Group $APP_GROUP"
-    # App Intent (v2.4): the binary must link AppIntents and still contain
-    # the intent types after -dead_strip (main.m's keepAlive call is what
-    # keeps them). Without these, the shortcut silently disappears.
+    # App Intent (v2.5): the binary must link AppIntents and still carry
+    # the intent TYPES after -dead_strip. v2.4 proved that grepping the
+    # bare names is NOT a check: the v2.4 binary still contained the plain
+    # strings "CleanCacheIntent" and "CleanerShortcuts" (1 each) while the
+    # types themselves were gone — so `grep -a -q "CleanCacheIntent"`
+    # PASSED on a binary with no intent in it, and the Shortcuts app found
+    # nothing. Only a Swift-mangled symbol ([$]s…V) or the appShortcuts
+    # witness proves the type is really linked. The length digits are
+    # matched loosely ([0-9]+) so the check does not depend on counting the
+    # identifier length by hand: "CleanerShortcuts" is 16 characters
+    # (Cleaner 7 + Shortcuts 9), and the v2.4 binary's surviving
+    # $s14CleanerIntents18CLIntentsBootstrapC (18 chars) confirms the
+    # length-prefix rule — an earlier note wrote 17 for CleanerShortcuts,
+    # which is a miscount; either way the regex matches, and the real
+    # emitted symbol is confirmed when the built IPA is verified.
     otool -L "$app_path/Cleaner" | grep -q "AppIntents" || \
         fail "app binary does not link AppIntents"
-    grep -a -q "CleanCacheIntent" "$app_path/Cleaner" || \
-        fail "app binary is missing the CleanCacheIntent type"
-    grep -a -q "CleanerShortcuts" "$app_path/Cleaner" || \
-        fail "app binary is missing the CleanerShortcuts provider"
+    grep -aE -q '[$]s[0-9]+CleanerIntents[0-9]+CleanCacheIntentV' "$app_path/Cleaner" || \
+        fail "app binary is missing the CleanCacheIntent type (no mangled symbol — dead-strip may have removed it)"
+    grep -aE -q '[$]s[0-9]+CleanerIntents[0-9]+CleanerShortcutsV' "$app_path/Cleaner" || \
+        fail "app binary is missing the CleanerShortcuts provider (no mangled symbol — dead-strip may have removed it)"
+    grep -a -q "appShortcuts" "$app_path/Cleaner" || \
+        fail "app binary has no appShortcuts witness"
 }
 
 # Package to a same-directory temporary sibling, then validate the actual ZIP

@@ -25,6 +25,12 @@
     [window makeKeyAndVisible];
     self.window = window;
 
+    // v2.5: the Shortcuts guide shows whether this phone has launched the
+    // app's UI once — the system only indexes App Shortcuts after a real
+    // launch. This runs only for a real UI scene (a headless intent run
+    // has no scene, so it never sets the flag by itself).
+    [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"cl-ui-launched-once"];
+
     // Recover an interrupted restore from a previous launch, if any.
     NSString *recovery = cl_recover_interrupted_restore();
     if (recovery.length) cl_log(@"%@", recovery);

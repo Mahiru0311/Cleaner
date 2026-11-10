@@ -73,6 +73,14 @@ typedef struct {
     NSArray<NSString *> *_Nullable roots;
     BOOL dryRun;
     CLScanCancellation *_Nullable cancellation;
+    // v2.5: when YES, roots may be any container-relative directory, not
+    // just Library/Caches or tmp. Only the custom-rule engine sets this,
+    // only for a validated directory rule (the directory was picked in
+    // the picker and passed cl_custom_clean_validate_rule); the fd walk
+    // itself is equally safe anywhere inside the container (no-follow,
+    // identity re-check before every delete). All other callers keep the
+    // Caches/tmp restriction.
+    BOOL rootsMayBeAnywhere;
 } CLCleanMatchOptions;
 
 typedef struct {
@@ -148,12 +156,13 @@ extern NSString *const CLCacheStoreDidUpdateNotification;
 @property (nonatomic, copy, readonly) NSArray<CLCacheItem *> *items;
 @property (nonatomic, readonly) unsigned long long totalBytes;
 @property (nonatomic, readonly) NSUInteger appCount;
-// Total DISTINCT APPS measured in the last scan (v2.4: Application
-// containers only — PluginKitPlugin extension containers are excluded).
-// Unlike appCount, this does not drop apps whose cache is under 64KB —
-// so after a clean, when every app is ~0 bytes and appCount falls to 0,
-// the home still shows the real app total (114). v2.3 counted every
-// container and showed 1226. See REFACTOR-v2 §11.
+// Total DISTINCT APPS measured in the last scan (v2.5: distinct bundle
+// ids of Application containers — one app can own several containers, so
+// a container count is not an app count; v2.4 counted containers and
+// showed 267 for 114 apps). Unlike appCount, this does not drop apps whose
+// cache is under 64KB — so after a clean, when every app is ~0 bytes and
+// appCount falls to 0, the home still shows the real app total (114).
+// v2.3 counted every container and showed 1226. See REFACTOR-v2 §12.
 @property (nonatomic, readonly) NSUInteger totalAppCount;
 @property (nonatomic, readonly) BOOL limited;
 @property (nonatomic, readonly) NSTimeInterval lastScanFinished;

@@ -740,3 +740,138 @@ macOS runner 上 16 个 unittest 应全过（有 plutil），另有 ObjC 套件�
   应用数是否显示 114 且清理后仍是 114、快捷指令里能否看到「清理全部缓存」、点一下是否不打开应用
   就在后台清理并返回释放量（25 秒够不够一次清完）、规则筛选与试运行预览、引擎加固——
   都须用户在 iPhone 17 / iOS 27.0 上装 0.2.4 后截图 + 快捷指令实测确认。
+
+### §11 更正（2026-11-10 20:46 真机截图后，验实）
+
+上面这节有三处是错的，20:46 的截图 + 对 v2.4 二进制的验实推翻了它们。
+错的记录不删，留在这里当教训；真正的修法在 §12。
+
+1. **keepAlive 不能防 -dead_strip。** §11 第 3 条写的是「main.m 调
+   `[CLIntentsBootstrap keepAlive]`（引用两个 intent 类型，防止 -dead_strip 把它们链掉）」——
+   错。keepAlive 只写了 `_ = CleanCacheIntent.self` / `_ = CleanerShortcuts.self`，是没副作用的
+   元数据引用；-O + LTO 下优化器直接消掉，-dead_strip 再把类型和协议一致性整个删掉。
+   验实（v2.4 IPA，SHA-256 79358a52e3722954d1a02bf21a0536a0d4155158b1981feb89840edd9211cd3e，
+   主二进制 464,624 字节）：`CleanCacheIntent` 和 `CleanerShortcuts` 在二进制里各只剩 1 个
+   裸名字符串；混淆符号 `$s14CleanerIntents16CleanCacheIntentV`、
+   `$s14CleanerIntents17CleanerShortcutsV` 出现 0 次，`appShortcuts` 也是 0 次；只剩
+   `CLIntentsBootstrap` 的符号。20:46 截图（手机确实是 v0.2.4 (1)，已打开过，快捷指令里
+   搜 cleaner 仍是 0 结果）与二进制证据一致：包里根本没有意图。build.sh:71 的注释
+   「no -dead_strip risk here」同样是错的。v2.5 的修法：`CLCleanerShortcutsInfo` 直接读
+   `CleanerShortcuts.appShortcuts`，指引页把标题显示出来——真实数据流，优化器删不掉；
+   keepAlive 保留，但不再是保护。
+2. **「二进制含 `CleanCacheIntent` / `CleanerShortcuts`」有误导性。** §11 构建结果里那句
+   说的是裸字符串，不是类型。裸字符串在是没用的：系统靠扫描二进制里的类型元数据发现
+   intent，名字符串还在不代表类型还在。以后验包只认混淆符号 + `appShortcuts`。
+3. **build.sh 的验证是被裸字符串骗过去的。** §11 构建结果说「App Group 由 build.sh 的
+   validate_app 在构建时用 codesign -d 验过」没错，但 validate_app 里那两句
+   `grep -a -q "CleanCacheIntent"` / `grep -a -q "CleanerShortcuts"` 在这个坏包上是能
+   通过的——因为裸名字符串还在。只把检查改成“查二进制”不够，必须查混淆符号，查裸名字
+   等于没查。同样假的还有两处测试桩：`tests/browser_ui_regressions.py:371`（只是在
+   build.sh 文本里 grep "CleanCacheIntent"，根本没查二进制）和 `tests/test_build.py:42`
+   的假 otool（`-L` 只打印标记，不读二进制）。v2.5 三处都改成真检查：validate_app 查
+   混淆符号正则 `[$]s[0-9]+CleanerIntents[0-9]+…V` + `appShortcuts`；假 clang 桩真的
+   产出这些符号，`FAKE_DROP_INTENT=1` 模拟 v2.4 的包（裸名在、符号不在）时构建必须失败；
+   假 otool 改成读二进制再报链接。
+   注：混淆符号的长度数——"CleanerShortcuts" 是 16 个字符（Cleaner 7 + Shortcuts 9），
+   v2.4 二进制里活下来的 `$s14CleanerIntents18CLIntentsBootstrapC`（18 个字符）也证实了
+   长度前缀就是字符数；一份早期的记录写成 17 是数错了。v2.5 的检查用长度不敏感的正则，
+   16 和 17 都能过，真正发出的符号在验包时从二进制里确认。
+4. **应用数 267：第 2 条的修法没修住。** §11 第 2 条说 v2.4「只在 Application 根下计数」
+   就能回到 114——20:46 截图显示 267。原因：一个应用有 Bundle 容器和 Data 容器两个，
+   数容器还是多算（114×2 再加零头正好对得上 267）。v2.5 改回按去重 bundle ID 数，必须
+   等于清理列表的条目数（114），清理后不变；回归测试断言「应用数 == 清理列表条目数」。
+5. **模式行还在词中换行。** 20:46 截图：`「<App Group> [沙 / 盒模式]」`——v2.1 的
+   15pt + 最多 2 行没防住词中断行。v2.5 把文案缩短成「沙盒模式」。对勾本身是对的，不用动。
+
+## 12. v2.5（2026-11-10 晚，v2.4 真机截图反馈：快捷指令搜不到 + 应用数 267 + 词中断行 + 自定义规则还要更好）
+
+用户 2026-11-10 20:40–20:41 下单：v2.4 的自定义规则还不够好——点添加规则要打开
+一个新页面（文件选择页），选目录（或自己输/粘贴路径），右上角选择确认，规则进以后的
+清理；那页上选「清空整个目录」或设条件（年龄/大小/扩展名/名字）；「一定要多运用相关项目，
+逻辑要搞好」。快捷指令：「我真的没有看到在哪儿怎么用？」——方向不变：点一下快捷指令，
+后台自动清理，不打开应用。另：多找沙盒相关和清理类项目。
+20:44 用户截图：在「快捷指令」App 里搜 cleaner，确实一个结果都没有。
+20:46 第二张截图：手机上确实是 v0.2.4 (1)，已打开过，搜 cleaner 还是零结果；
+同一张截图：应用数 267（不是 114），模式行词中断行「[沙 / 盒模式]」；对勾本身是对的。
+
+研究先行：`docs/GITHUB-RESEARCH-v2.5.md`（写在实现之前，像 v2.3 那样）。借的东西：
+BleachBit（7435★，GPL-3.0）的 Custom 清单 + 文件选择器流程（选目录 → 确认 → 进清理
+清单）、保护路径警告/拒绝、预览先行；SD Maid SE（8039★，GPL-3.0）的自定义过滤器结构
+（标签/数据区域/文件类型/路径+名字条件/排除）；Filza（经 Torrekie/FilzaWorse 验证跑在
+worse_query 上）的钻取界面；iOS 系统文件选择器够不到别的 App 容器，所以钻取必须在
+应用内做——不是偷懒，是沙盒决定的。另：Erosion（worse_query 支持 iOS 27.0–27.2.1）、
+YangJiiii/3105（fd 遍历）、WQFiles-CN（简中本地化参考）。不搬：各 fork 白拷贝、
+worsefiles-ios（太新）、3105 取容器方式、越狱/TrollStore 专属逻辑。
+
+1. **快捷指令根因与修复（本版核心，见 §11 更正）。** 20:46 截图排除了「没装新版 /
+   没打开过」；v2.4 二进制验实：意图类型被 -Os -flto -dead_strip 优化掉了（裸名字符串
+   各剩 1 个，混淆符号 0 次，appShortcuts 0 次，只剩 CLIntentsBootstrap 的符号）。
+   keepAlive 只写 `_ = X.self`，拦不住 -dead_strip；build.sh 的裸名 grep 在这个坏包上
+   能通过，等于没查。修法三件套，缺一不可：
+   (a) 真实数据流：`CLCleanerShortcutsInfo`（Swift）直接读
+   `CleanerShortcuts.appShortcuts`，设置里的指引页把标题显示出来——数据流一路到 UIKit
+   标签，优化器删不掉；keepAlive 保留，但不再是保护。
+   (b) validate_app 改成真检查：二进制里 grep 混淆符号正则
+   `[$]s[0-9]+CleanerIntents[0-9]+CleanCacheIntentV` /
+   `[$]s[0-9]+CleanerIntents[0-9]+CleanerShortcutsV` + `appShortcuts`，缺一个构建失败；
+   裸名 grep 删掉，build.sh:71 的错注释改掉（长度数写长度不敏感的正则：CleanerShortcuts
+   是 16 个字符，一份早期记录写 17 是数错了——真正发出的符号在验包时从二进制里确认）。
+   (c) 两处假测试桩改成真检查：`tests/test_build.py` 的假 clang 桩真的产出混淆符号 +
+   appShortcuts + AppIntents 标记，`FAKE_DROP_INTENT=1` 模拟 v2.4 的包（裸名在、符号不
+   在）时构建必须失败（新增 `test_stripped_intent_fails_the_build`）；假 otool 改成读
+   二进制再报 AppIntents 链接。`browser_ui_regressions.py:371` 的假检查换成真断言
+   （build.sh 里的混淆符号正则、appShortcuts、数据流、指引页、选择器、去重计数、模式行、0.2.5）。
+   指引页（新文件 `App/CLShortcutsGuideViewController.*`，设置 → 快捷指令）：先讲前置
+   条件（装 0.2.5 → 打开一次 Cleaner → 系统索引之后再去搜「清理全部缓存」；搜不到先重启
+   手机再试），带 live 状态（当前版本带不带意图——运行时读 `shortcutTitles`，即真实的注册
+   结果；这台手机打开过没有——NSUserDefaults `cl-ui-launched-once`，只在真正进界面时记一次，
+   scene delegate 里设，无头跑意图不记），一个按钮打开快捷指令 App（shortcuts://），
+   cleaner://clean 只留作备用。「搜不到」不算修好：只有用户在真机上搜到并点过一次，才算验证通过。
+2. **应用数 267 → 按去重 bundle ID 数。** v2.4 数的是 Application 容器（一个应用的
+   Bundle 容器 + Data 容器各算一个，114×2 再加零头正好 267）。修法：扫描器上下文改用
+   `appBundleIDs`（NSMutableSet，只加 Application 根下容器的 bundle ID，`cl_container_label`
+   兜底），5 个完成点都传 `ctx.appBundleIDs.count` 作 totalApps；PluginKitPlugin 容器永不
+   加入。必须等于清理列表的条目数（用户手机上 114），清理后不变。回归测试断言「应用数 ==
+   清理列表条目数」。
+3. **模式行：文案缩短成「沙盒模式」。** v2.1 的 15pt + 最多 2 行没防住词中断行；现在文案
+   本身短到断不了词（首页两处都改）。
+4. **自定义清理 v2：目录选择器（新文件 `App/CLRulePickerViewController.*`）。**
+   点添加规则 → 新页面：没扫描过先提示去扫描；选应用（可搜索，按名字排序）→ 进容器逐级钻取
+   （文件夹在前，带大小/项数；文件只看详情，不打开；复用目录页的列举与安全检查：规范路径必须
+   在容器内、无符号链接祖先）；当前目录的范围二选一：清空整个目录 / 按条件删（扩展名 CSV、
+   文件名、N 天前、大于/小于 N KB，至少填一个）；手动输入路径（相对路径或从目录页复制的完整
+   路径，点「前往」跳过去，绝对路径自动解析到应用+相对路径）；右上角「选择」确认。
+   规则列表：点一条规则预览/启用停用/删除不变；目录/文件夹规则多一个「编辑」，重开选择器预填，
+   保存时替换原规则（同 UUID、同启用状态）。旧的扩展名/文件名/文件夹规则和预设照常用（引擎没动）。
+   安全（v2.4 的基础上加）：容器根目录、Documents、Library 本身拒绝；非 Library/Caches +
+   tmp 的目录允许，但「选择」时再问一次确认（BleachBit 的保护路径警告）；删除前重验容器身份、
+   逐项记账、幂等重跑（都在引擎里）。
+5. **引擎（Core/CLCustomClean.*，Core/CLCache.*）。** 新规则类型 directory：scope all
+   （整目录清，走文件夹 purge）/ filtered（只删符合条件的文件，走 fd 遍历，
+   `roots=@[pattern]` + `rootsMayBeAnywhere=YES`——CLCache 的过滤遍历为此开了这个口子，仅已
+   校验的目录规则可用；没开时非 Caches/tmp 根仍拒绝）；校验：scope all 带条件拒绝、filtered
+   至少一个条件、扩展名 CSV 规范化（逗号/中文逗号/空格分隔，补点、小写、去重）、年龄/大小抽成
+   共用检查；粘贴路径解析（绝对路径按最长容器前缀匹配，相对路径在当前应用下，拒绝容器根、
+   `.`/`..`、不属于任何已扫描应用的路径；绝对路径先规范化再匹配，中间的 `..` 会被消掉，
+   仍在容器内就接受）；规则摘要支持 directory（「微信 · 目录 …（全部/按条件）· 扩展 …」）；
+   测试钩子 `cl_custom_clean_set_plist_path_for_testing`（CL_ACCESS_TESTING）。
+   后台 `CleanCacheIntent` 不用改：它本来就跑已启用的自定义规则，目录规则自动进后台清理。
+
+本地已验（Linux，无 Xcode）：`browser_ui_regressions.py` 通过（新增断言：混淆符号检查、
+数据流、指引页、选择器、去重计数、模式行、0.2.5）；`python3 -m unittest discover -s tests
+-p 'test_*.py'` 17 个，2 个失败与 v2.0–v2.4 相同（`test_build` 两用例缺 `plutil`，Linux
+固有）；新增 `test_stripped_intent_fails_the_build` 通过（Linux 上它与其它失败用例一样在
+plutil 之前就停了——真正的端到端证明在 macOS runner 上；grep 逻辑本身已直接验过：旧裸名
+grep 在 v2.4 式包上能通过，新混淆符号 + appShortcuts 检查在同一个包上全失败、在好包上全通过，
+17 长度变体也能被正则匹配）。`bash -n build.sh` 及各 runner 通过。ObjC 套件
+（`tests/CLCustomCleanTests.m` 新增 v2.5 块：目录规则校验、CSV 规范化、粘贴路径解析、目录规则
+真 API 执行——scope-all 预览+清理、Documents/Downloads 内按条件删、幂等重跑、rootsMayBeAnywhere
+未开仍拒绝、plist 往返——保存/重载/展示/同 UUID 编辑/停用/删除）只能在 macOS runner 上跑，
+本地无 Apple SDK，待 Actions 验证。
+
+构建（待填：Actions run、IPA 大小/SHA/路径、混淆符号实测）。
+真机验证仍未做：选择器流程（选目录 → 选择 → 规则出现并进真清理）、规则进后台快捷指令清理、
+快捷指令在装 0.2.5 + 打开一次后出现并点一下后台清完不打开应用、指引页 live 状态、应用数 114
+（清理后仍 114）、模式行不断词、规则筛选 + 试运行预览——都须用户在 iPhone 17 / iOS 27.0 上确认。
+v2.4 的签名/安装问题原因仍未知（用户说装不上 v2.4；短链 https://is.gd/mAm4mr 已给，2026-11-12
+20:35 CST 过期）；v2.5 之前别让用户测。

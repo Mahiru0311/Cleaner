@@ -6,6 +6,7 @@
 
 #import "CLSettingsViewController.h"
 #import "CLLogViewController.h"
+#import "CLShortcutsGuideViewController.h"
 
 @interface CLSettingsViewController ()
 @property (nonatomic, strong) NSArray<NSArray<NSDictionary *> *> *sections;
@@ -33,7 +34,7 @@
             @{@"title": @"沙盒技术", @"value": @"worse_query"},
         ],
         @[
-            @{@"title": @"添加到快捷指令", @"action": @"shortcuts-guide"},
+            @{@"title": @"快捷指令", @"action": @"shortcuts-guide"},
             @{@"title": @"复制 cleaner://clean", @"action": @"copy-clean"},
             @{@"title": @"复制 cleaner://scan", @"action": @"copy-scan"},
         ],
@@ -44,6 +45,8 @@
             @{@"title": @"首页界面", @"value": @"KernelSU Manager (tiann)"},
             @{@"title": @"图标风格", @"value": @"huamidev/GestaltX"},
             @{@"title": @"fd 遍历与清理记账", @"value": @"YangJiiii/3105"},
+            @{@"title": @"目录选择器（自定义清理）", @"value": @"BleachBit / SD Maid SE / Filza"},
+            @{@"title": @"快捷指令保活", @"value": @"AppIntents 真实数据流 (v2.5)"},
         ],
         @[
             @{@"title": @"日志", @"action": @"log"},
@@ -105,7 +108,7 @@
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    if (section == 1) return @"点一下就在后台清理，不打开应用：快捷指令里添加 Cleaner 的「清理全部缓存」操作（或直接用预置的快捷指令）。cleaner://clean 链接仍可用，但会打开应用并弹确认框。";
+    if (section == 1) return @"点一下就在后台清理，不打开应用：先装 0.2.5、打开一次 Cleaner，系统索引之后在「快捷指令」里搜 Cleaner 就会出现「清理全部缓存」。点进「快捷指令」看状态和步骤。cleaner://clean 链接仍可用，但会打开应用并弹确认框。";
     if (section == 2) return @"图标风格参考 huamidev/GestaltX（GPL-3.0）；fd 遍历与清理记账参考 YangJiiii/3105（GPL-3.0）。Cleaner 是 GPL-3.0-or-later 开源软件。";
     return nil;
 }
@@ -135,11 +138,10 @@
         return;
     }
     if ([action isEqualToString:@"shortcuts-guide"]) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"添加到快捷指令"
-            message:@"1. 打开「快捷指令」，点右上角 + 新建快捷指令。\n2. 添加 Cleaner 的「清理全部缓存」操作（或直接在快捷指令里找到 Cleaner 预置的快捷指令）。\n3. 点完成，就可以在主屏幕、锁屏、操作按钮或用 Siri 直接调用——点一下就在后台清理，不打开应用。不需要服务器，全部在本机完成。\n备用的老办法：添加操作「打开 URL」，填 cleaner://clean（会打开应用并弹确认框）或 cleaner://scan（重新扫描）。"
-            preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
+        // v2.5: a real guide page with live status (does this build carry
+        // the intent? has this phone launched the app once?) instead of
+        // the old alert — the user could not find the shortcut at all.
+        [self.navigationController pushViewController:[CLShortcutsGuideViewController new] animated:YES];
         return;
     }
     if ([action isEqualToString:@"copy-clean"] || [action isEqualToString:@"copy-scan"]) {

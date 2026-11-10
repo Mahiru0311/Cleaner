@@ -265,7 +265,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
             self.statusCard.backgroundColor = [self cardColorLight:0xDFFAE4 dark:0x1A3825];
             self.statusTitleLabel.text = @"已授权";
             self.statusTitleLabel.textColor = UIColor.labelColor;
-            self.statusModeLabel.text = @"<App Group> [沙盒模式]";
+            self.statusModeLabel.text = @"沙盒模式";
             self.statusModeLabel.textColor = UIColor.labelColor;
             self.statusVersionLabel.textColor = UIColor.labelColor;
             self.checkBadgeView.hidden = NO;
@@ -527,9 +527,11 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     self.statusCard = status;
     self.statusTitleLabel = [self makeLabel:@"已授权" font:[UIFont systemFontOfSize:22 weight:UIFontWeightSemibold]
                                       color:UIColor.labelColor];
-    // Mode line: 15pt, at most 2 lines. At 16pt it wrapped mid-word
-    // ("[沙盒 / 模式]") in the narrow green card on a real device (v2.1).
-    self.statusModeLabel = [self makeLabel:@"<App Group> [沙盒模式]" font:[UIFont systemFontOfSize:15 weight:UIFontWeightMedium]
+    // Mode line: 15pt, at most 2 lines. The text is short on purpose —
+    // the old "<App Group> [沙盒模式]" broke mid-word ("[沙 / 盒模式]") on
+    // a real device (v2.5): 15pt + 2 lines does not stop a mid-word break
+    // when the line is one word too long, so the copy itself must fit.
+    self.statusModeLabel = [self makeLabel:@"沙盒模式" font:[UIFont systemFontOfSize:15 weight:UIFontWeightMedium]
                                      color:UIColor.labelColor];
     self.statusModeLabel.numberOfLines = 2;
     self.statusVersionLabel = [self makeLabel:@"版本：0.2.4" font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]

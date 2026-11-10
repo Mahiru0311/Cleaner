@@ -15,6 +15,7 @@
 #import "CLCache.h"
 #import "CLCustomClean.h"
 #import "CLLaunchServices.h"
+#import "CLRulePickerViewController.h"
 #import "CLUI.h"
 
 typedef NS_ENUM(NSInteger, CLCustomSection) {
@@ -93,7 +94,7 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     if (section == CLCustomSectionRules)
-        return @"点一条规则可以预览它会删什么（匹配文件数 + 大小），确认后再清理。扩展名/文件名规则还能按文件年龄、大小和子目录筛选。文件夹规则不能指向容器根目录、Documents 或 Library 本身；清理整个应用的数据请用应用页的「清空数据」（会先备份）。";
+        return @"点一条规则可以预览它会删什么（匹配文件数 + 大小），确认后再清理。点「添加规则」打开目录选择页：选应用、进它的容器里选目录，再选「清空整个目录」或「按条件删」。目录规则不能指向容器根目录、Documents 或 Library 本身；非缓存目录会先警告一次。清理整个应用的数据请用应用页的「清空数据」（会先备份）。";
     if (section == CLCustomSectionPresets) return @"点一下把预设的规则加入规则列表。";
     return @"被排除的应用和文件夹不会被任何规则清理。";
 }
@@ -204,7 +205,7 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
         return;
     }
     if (indexPath.section == CLCustomSectionRules && (NSUInteger)indexPath.row == _rules.count) {
-        [self addRuleSheet];
+        [self addRule];
         return;
     }
     if (indexPath.section == CLCustomSectionPresets) {
@@ -229,6 +230,14 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
         [weakSelf previewRule:rule];
     }]];
     BOOL enabled = [rule[CLCustomRuleEnabledKey] boolValue];
+    // v2.5: directory/folder rules can be edited in the picker (prefilled);
+    // extension/name rules keep preview/toggle/delete only.
+    NSString *kind = rule[CLCustomRuleKindKey];
+    if ([kind isEqualToString:@"directory"] || [kind isEqualToString:@"folder"]) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"编辑这条规则" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+            [weakSelf editRule:rule];
+        }]];
+    }
     [sheet addAction:[UIAlertAction actionWithTitle:enabled ? @"停用这条规则" : @"启用这条规则"
                                               style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
         typeof(self) strongSelf = weakSelf;
@@ -378,146 +387,52 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
     return apps;
 }
 
-- (void)addRuleSheet
+// v2.5: 添加规则 opens the directory picker (a NEW page), not the old
+// alert chain. The picker lets the user pick an app, drill into its
+// container, choose the scope (clear the whole directory, or delete by
+// conditions), and confirm with 选择 — the rule joins future cleaning.
+- (void)addRule
 {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"添加规则" message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    __weak typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"按文件夹" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
-        [weakSelf pickAppThenPatternForKind:@"folder" title:@"文件夹路径" placeholder:@"Library/Caches/xxx"];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"按文件类型" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
-        [weakSelf pickAppThenPatternForKind:@"extension" title:@"文件扩展名" placeholder:@".mp4"];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"按文件名" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
-        [weakSelf pickAppThenPatternForKind:@"name" title:@"文件名包含" placeholder:@"thumb"];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:
-                             [NSIndexPath indexPathForRow:_rules.count inSection:CLCustomSectionRules]];
-    sheet.popoverPresentationController.sourceView = cell ?: self.view;
-    sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
-}
-
-- (void)pickAppThenPatternForKind:(NSString *)kind title:(NSString *)title placeholder:(NSString *)placeholder
-{
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"选择应用" message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    __weak typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"全部应用" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
-        [weakSelf askPatternForKind:kind bundleID:@"*" title:title placeholder:placeholder];
-    }]];
-    for (CLCacheItem *app in [self scannedApps]) {
-        [sheet addAction:[UIAlertAction actionWithTitle:app.name style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
-            [weakSelf askPatternForKind:kind bundleID:app.bundleID title:title placeholder:placeholder];
-        }]];
+    if (![CLCacheStore shared].items.count) {
+        cl_alert(self, @"没有已扫描的应用", @"请先去清理页扫描一次，再回来添加规则。");
+        return;
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = self.view;
-    sheet.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
-    [self presentViewController:sheet animated:YES completion:nil];
-}
-
-- (void)askPatternForKind:(NSString *)kind bundleID:(NSString *)bundleID title:(NSString *)title placeholder:(NSString *)placeholder
-{
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:nil
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.placeholder = placeholder;
-        tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        tf.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
+    CLRulePickerViewController *picker = [[CLRulePickerViewController alloc] init];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"下一步" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+    picker.onSaved = ^{
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
-        NSString *pattern = [alert.textFields.firstObject.text stringByTrimmingCharactersInSet:
-                             NSCharacterSet.whitespaceCharacterSet];
-        if (!pattern.length) return;
-        if ([kind isEqualToString:@"folder"]) {
-            NSString *reason = nil;
-            if (!cl_custom_clean_validate_folder_pattern(pattern, &reason)) {
-                cl_alert(strongSelf, @"不能添加", reason);
-                return;
-            }
-            [strongSelf saveRule:cl_custom_clean_make_rule(bundleID, kind, pattern)];
-            return;
-        }
-        if ([kind isEqualToString:@"extension"] && ![pattern hasPrefix:@"."]) {
-            pattern = [@"." stringByAppendingString:pattern];
-        }
-        // v2.4: extension/name rules can filter by age, size and subfolder.
-        [strongSelf askFiltersForKind:kind bundleID:bundleID pattern:pattern];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
+        [strongSelf reloadModel];
+        [strongSelf.tableView reloadData];
+        [strongSelf updateRunButton];
+    };
+    [self.navigationController pushViewController:picker animated:YES];
 }
 
-// v2.4: optional filters for an extension/name rule. All four fields may
-// be left empty (no filter). "跳过" adds the rule without filters.
-- (void)askFiltersForKind:(NSString *)kind bundleID:(NSString *)bundleID pattern:(NSString *)pattern
+// v2.5: edit a directory/folder rule in the picker, prefilled. Saving
+// replaces the rule in place (same UUID, same enabled state). The rule's
+// app must be scanned — otherwise the prefill has nowhere to go.
+- (void)editRule:(NSDictionary *)rule
 {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"筛选（可选）"
-        message:@"只删符合条件的文件，留空就是不过滤。大小单位 KB。"
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.placeholder = @"仅删 N 天前的文件";
-        tf.keyboardType = UIKeyboardTypeDecimalPad;
-    }];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.placeholder = @"仅删大于 N KB 的文件";
-        tf.keyboardType = UIKeyboardTypeDecimalPad;
-    }];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.placeholder = @"仅删小于 N KB 的文件";
-        tf.keyboardType = UIKeyboardTypeDecimalPad;
-    }];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.placeholder = @"仅限子目录，如 Library/Caches/xxx";
-        tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        tf.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
+    NSString *bid = rule[CLCustomRuleBundleIDKey];
+    BOOL scanned = NO;
+    for (CLCacheItem *app in [self scannedApps]) {
+        if ([app.bundleID isEqualToString:bid]) { scanned = YES; break; }
+    }
+    if (!scanned) {
+        cl_alert(self, @"找不到这个应用", @"这条规则的应用没有扫描结果，请先去清理页扫描一次，再回来编辑。");
+        return;
+    }
+    CLRulePickerViewController *picker = [[CLRulePickerViewController alloc] initWithRule:rule];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"跳过" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+    picker.onSaved = ^{
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
-        [strongSelf saveRule:cl_custom_clean_make_rule(bundleID, kind, pattern)];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"添加" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
-        typeof(self) strongSelf = weakSelf;
-        if (!strongSelf) return;
-        NSString *ageText = [alert.textFields[0].text stringByTrimmingCharactersInSet:
-                             NSCharacterSet.whitespaceCharacterSet];
-        NSString *minText = [alert.textFields[1].text stringByTrimmingCharactersInSet:
-                             NSCharacterSet.whitespaceCharacterSet];
-        NSString *maxText = [alert.textFields[2].text stringByTrimmingCharactersInSet:
-                             NSCharacterSet.whitespaceCharacterSet];
-        NSString *sub = [alert.textFields[3].text stringByTrimmingCharactersInSet:
-                         NSCharacterSet.whitespaceCharacterSet];
-        NSNumber *age = ageText.length ? @(ageText.doubleValue) : nil;
-        NSNumber *minSize = minText.length ? @(minText.doubleValue * 1024) : nil;
-        NSNumber *maxSize = maxText.length ? @(maxText.doubleValue * 1024) : nil;
-        NSDictionary *rule = cl_custom_clean_make_rule_full(bundleID, kind, pattern, age, minSize, maxSize,
-                                                            sub.length ? sub : nil);
-        NSString *reason = nil;
-        if (!cl_custom_clean_validate_rule(rule, &reason)) {
-            cl_alert(strongSelf, @"不能添加", reason);
-            return;
-        }
-        [strongSelf saveRule:rule];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)saveRule:(NSDictionary *)rule
-{
-    NSMutableArray *rules = [cl_custom_clean_rules() mutableCopy];
-    [rules addObject:rule];
-    cl_custom_clean_save_rules(rules);
-    [self reloadModel];
-    [self.tableView reloadData];
-    [self updateRunButton];
+        [strongSelf reloadModel];
+        [strongSelf.tableView reloadData];
+        [strongSelf updateRunButton];
+    };
+    [self.navigationController pushViewController:picker animated:YES];
 }
 
 #pragma mark - Presets

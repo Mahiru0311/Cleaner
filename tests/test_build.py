@@ -18,6 +18,17 @@ if [ "$1" = "--sdk" ] && [ "$3" = "--show-sdk-path" ]; then
     printf '%s\n' "$FAKE_SDK"
     exit 0
 fi
+if [ "$1" = "--sdk" ] && [ "$3" = "swiftc" ]; then
+    output=
+    previous=
+    for argument in "$@"; do
+        if [ "$previous" = "-o" ]; then output=$argument; fi
+        previous=$argument
+    done
+    test -n "$output"
+    printf 'fake swift object\n' > "$output"
+    exit 0
+fi
 if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then
     output=
     previous=
@@ -26,7 +37,9 @@ if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then
         previous=$argument
     done
     test -n "$output"
-    printf '#!/bin/sh\nexit 0\n' > "$output"
+    # The stub must carry the markers validate_app checks for (v2.4):
+    # the AppIntents link and the intent types that -dead_strip must keep.
+    printf '#!/bin/sh\n# CleanCacheIntent CleanerShortcuts\n# AppIntents linked\n\nexit 0\n' > "$output"
     chmod +x "$output"
     exit 0
 fi
@@ -69,6 +82,16 @@ fi
 exit 2
 '''
 
+FAKE_OTOOL = r'''#!/bin/sh
+set -eu
+if [ "$1" = "-L" ]; then
+    # validate_app (v2.4) greps this for the AppIntents link.
+    printf '\t/System/Library/Frameworks/AppIntents.framework/AppIntents (compatibility version 1.0.0, current version 1.0.0)\n'
+    exit 0
+fi
+exit 2
+'''
+
 FAKE_ZIP = r'''#!/bin/sh
 set -eu
 if [ "${FAKE_ZIP_FAIL:-0}" = 1 ]; then
@@ -93,6 +116,7 @@ class StagedBuildTests(unittest.TestCase):
         for name, content in {
             "xcrun": FAKE_XCRUN,
             "codesign": FAKE_CODESIGN,
+            "otool": FAKE_OTOOL,
             "zip": FAKE_ZIP,
             "unzip": FAKE_UNZIP,
         }.items():

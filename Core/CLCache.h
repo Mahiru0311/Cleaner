@@ -34,7 +34,8 @@ BOOL cl_purge_contents_cancellable(NSString *dir, unsigned long long *freed,
                                    CLScanCancellation *_Nullable cancellation);
 
 // fd-relative removal shared with CLGrant's copy_contents (same-file staging).
-BOOL cl_remove_entry(int parent, NSString *name, NSString *path, unsigned long long *freed,
+// *freed is optional (callers cleaning a partial stage pass NULL).
+BOOL cl_remove_entry(int parent, NSString *name, NSString *path, unsigned long long *_Nullable freed,
                      CLScanCancellation *_Nullable cancellation);
 
 @interface CLCacheTargetRecord : NSObject

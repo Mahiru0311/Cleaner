@@ -94,7 +94,7 @@ static BOOL cl_purge_fd(int fd, NSString *path, unsigned long long *freed, CLSca
     return ok;
 }
 
-BOOL cl_remove_entry(int parent, NSString *name, NSString *path, unsigned long long *freed,
+BOOL cl_remove_entry(int parent, NSString *name, NSString *path, unsigned long long *_Nullable freed,
                             CLScanCancellation *cancellation)
 {
     if (cancellation.isCancelled) return NO;

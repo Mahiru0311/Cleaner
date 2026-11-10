@@ -553,8 +553,11 @@ require(background, "cl-intent-last-run.plist", "last-run plist in the App Group
 # what the system reads.
 require(build, "appintentsmetadataprocessor", "build extracts the App Intents metadata")
 require(build, "-emit-const-values", "swiftc emits const-values output")
-require(build, "-emit-const-values-path", "swiftc writes the .swiftconstvalues file")
+require(build, "-output-file-map", "swiftc writes const-values via the output file map")
+require(build, '"const-values"', "output file map names the const-values file")
 require(build, "-const-gather-protocols-file", "swiftc gathers the AppIntents protocols")
+require(build, "-Xfrontend -const-gather-protocols-file -Xfrontend", "protocols file is passed as two -Xfrontend args (one -Xfrontend eats only one arg)")
+forbid(build, "-emit-const-values-path", "no such flag: the const-values path comes from the file map (run 42853045304)")
 require(build, "swift_const_gather_protocols.json", "protocols file for const gathering")
 require(build, "Metadata.appintents", "metadata lands in the .app")
 require(build, "check_appintents_metadata.py", "build validates the metadata package")

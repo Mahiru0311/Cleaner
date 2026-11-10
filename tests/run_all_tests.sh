@@ -65,11 +65,22 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
     # This also type-checks the Swift file on the macOS runner. The
     # const-values flags are the same as build.sh's (v2.7): a misspelled
     # flag fails the preflight here instead of the release build.
+    # -Xfrontend eats exactly one argument, so the protocols file needs
+    # two -Xfrontend flags; the const-values path comes from the output
+    # file map, not from a command-line flag.
+    cat > "$OUT/output-file-map.json" <<EOF
+{
+  "$ROOT/Intents/CleanerIntents.swift": {
+    "object": "$OUT/CleanerIntents.o",
+    "const-values": "$OUT/CleanerIntents.swiftconstvalues"
+  }
+}
+EOF
     xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$IOS_SDK" -O -swift-version 5 \
         -parse-as-library -module-name CleanerIntents \
         -emit-const-values \
-        -Xfrontend -emit-const-values-path "$OUT/CleanerIntents.swiftconstvalues" \
-        -Xfrontend -const-gather-protocols-file Intents/swift_const_gather_protocols.json \
+        -output-file-map "$OUT/output-file-map.json" \
+        -Xfrontend -const-gather-protocols-file -Xfrontend Intents/swift_const_gather_protocols.json \
         -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
         -emit-objc-header-path "$OUT/CleanerIntents-Swift.h" \
         -I Core -c Intents/CleanerIntents.swift -o "$OUT/CleanerIntents.o" > "$OUT/ios-swift.log" 2>&1 || {

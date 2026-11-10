@@ -64,6 +64,19 @@ XCODE_VERSION=$(xcodebuild -version | awk '/^Xcode /{print $2; exit}') || \
 # files and the Swift const-values files as lists, one path per line.
 printf '%s\n' "$ROOT/Intents/CleanerIntents.swift" > "$OUT/intent-sources.txt"
 printf '%s\n' "$OUT/CleanerIntents.swiftconstvalues" > "$OUT/intent-const-vals.txt"
+# The const-values output path lives in the OUTPUT FILE MAP, not on the
+# command line: swiftc writes the .swiftconstvalues file for each source
+# listed under "const-values" (Chromium's swiftc.py does exactly this;
+# there is no command-line flag for the const-values path). The map key must be the
+# source path as passed to swiftc below (absolute).
+cat > "$OUT/output-file-map.json" <<EOF
+{
+  "$ROOT/Intents/CleanerIntents.swift": {
+    "object": "$OUT/CleanerIntents.o",
+    "const-values": "$OUT/CleanerIntents.swiftconstvalues"
+  }
+}
+EOF
 # App Intent (v2.4): CleanerIntents.swift is compiled first — it emits the
 # generated ObjC header (CleanerIntents-Swift.h, imported by App/main.m
 # for the keepAlive call) and the object file linked into the app below.
@@ -108,9 +121,15 @@ printf '%s\n' "$OUT/CleanerIntents.swiftconstvalues" > "$OUT/intent-const-vals.t
 # IPAs), but build.sh never ran the extraction Xcode does automatically,
 # so iOS had nothing to read and the shortcut never appeared. The
 # extraction needs the Swift const-values output: swiftc gets
-# -emit-const-values + -emit-const-values-path (the .swiftconstvalues
-# file) + -const-gather-protocols-file (Intents/swift_const_gather_protocols.json,
-# the AppIntents protocols to gather), and after linking, BEFORE signing,
+# -emit-const-values, the const-values path comes from the output file
+# map ($OUT/output-file-map.json, "const-values" entry — Chromium's
+# swiftc.py does exactly this; there is no command-line flag for the
+# const-values path), and the protocols file is passed as TWO -Xfrontend
+# args (-Xfrontend eats exactly one argument, so a single -Xfrontend with
+# the path after it leaves the path as a positional input file —
+# run 42853045304 failed on exactly that). The protocols file is
+# Intents/swift_const_gather_protocols.json (the AppIntents protocols
+# to gather). After linking, BEFORE signing,
 # appintentsmetadataprocessor turns them into .app/Metadata.appintents/
 # (extract.actionsdata + version.json). The one unknown is whether the
 # processor accepts the separate CleanerIntents module — if it extracts
@@ -129,8 +148,8 @@ build_app_binary() {
     xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -Onone -swift-version 5 \
         -parse-as-library -module-name "$module" \
         -emit-const-values \
-        -Xfrontend -emit-const-values-path "$OUT/CleanerIntents.swiftconstvalues" \
-        -Xfrontend -const-gather-protocols-file "$ROOT/Intents/swift_const_gather_protocols.json" \
+        -output-file-map "$OUT/output-file-map.json" \
+        -Xfrontend -const-gather-protocols-file -Xfrontend "$ROOT/Intents/swift_const_gather_protocols.json" \
         -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
         -emit-objc-header-path "$OUT/CleanerIntents-Swift.h" \
         -I Core -c "$ROOT/Intents/CleanerIntents.swift" -o "$OUT/CleanerIntents.o"

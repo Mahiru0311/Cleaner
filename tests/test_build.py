@@ -20,20 +20,17 @@ if [ "$1" = "--sdk" ] && [ "$3" = "--show-sdk-path" ]; then
 fi
 if [ "$1" = "--sdk" ] && [ "$3" = "swiftc" ]; then
     output=
-    constvals=
     previous=
     for argument in "$@"; do
         if [ "$previous" = "-o" ]; then output=$argument; fi
-        if [ "$previous" = "-emit-const-values-path" ]; then constvals=$argument; fi
         previous=$argument
     done
     test -n "$output"
     printf 'fake swift object\n' > "$output"
-    # v2.7: build.sh passes -emit-const-values-path; the fake writes the
-    # const-values file so the (fake) processor has its input.
-    if [ -n "$constvals" ]; then
-        printf '{}\n' > "$constvals"
-    fi
+    # v2.7: the const-values path lives in the output file map, not on
+    # the command line; the fake writes it next to the object file with
+    # the same stem build.sh uses.
+    printf '{}\n' > "${output%.o}.swiftconstvalues"
     exit 0
 fi
 if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then

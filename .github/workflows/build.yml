@@ -1,0 +1,32 @@
+name: Build Cleaner IPA
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          ls /Applications | grep -i xcode || true
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer || sudo xcode-select -p
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Build Cleaner.ipa
+        run: ./build.sh
+
+      - name: Upload Cleaner.ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cleaner-ipa
+          path: Cleaner.ipa
+          if-no-files-found: error

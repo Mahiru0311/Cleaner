@@ -61,8 +61,8 @@ xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/Modul
     -miphoneos-version-min="$MINIMUM_IOS_VERSION" \
     -isysroot "$SDK" -I Core -I App -Wall -Wextra -Werror -Os -flto -dead_strip \
     -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers \
-    Core/CLGrant.m Core/CLScan.m Core/CLCache.m Core/CLApp.m Core/CLLaunchServices.m \
-    App/CLUI.m App/CLCleanerViewController.m App/CLAppsViewController.m \
+    Core/CLGrant.m Core/CLScan.m Core/CLCache.m Core/CLApp.m Core/CLLaunchServices.m Core/CLCustomClean.m \
+    App/CLUI.m App/CLCleanerViewController.m App/CLAppsViewController.m App/CLCustomCleanViewController.m \
     App/CLAppActions.m App/CLAppDirectoryViewController.m \
     App/CLHomeViewController.m App/CLSettingsViewController.m App/CLLogViewController.m \
     App/CLTabBarController.m App/main.m -o "$APP/Cleaner"

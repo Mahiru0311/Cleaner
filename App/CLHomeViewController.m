@@ -1,13 +1,28 @@
 //
 //  CLHomeViewController.m
-//  Cleaner v2 — Home, 1:1 replica of KernelSU v3.2.5 (Miuix) home, copy changed.
-//  Layout (see HomeMiuix.kt StatusCard + the reference screenshot):
-//  light-grey background, huge bold title, green status card left (#DFFAE4,
-//  88pt check circle INSIDE the card's bottom-right corner, #36D167) + two
-//  white mini cards right, one white info card, standard UITabBarController
-//  (iOS 26 native Liquid Glass, owned by CLTabBarController since v2.1).
-//  v2.2: the power button is gone (it did nothing; rescan is pull-to-refresh
-//  now) and the check circle no longer overflows the card — see buildUI.
+//  Cleaner v2 — Home, 1:1 replica of KernelSU v3.2.5 (Miuix) home.
+//  Layout (reference screenshot docs/kernelsu-old-home-reference.jpg and
+//  HomeMiuix.kt StatusCard in the local KernelSU clone): light-grey
+//  background, huge bold title, light-green status card left (#DFFAE4,
+//  title 22pt semibold + mode 15pt + version 15pt) + two white mini cards
+//  right, one white info card, standard UITabBarController (iOS 26 native
+//  Liquid Glass, owned by CLTabBarController since v2.1). The check is
+//  Icons.Rounded.CheckCircleOutline: a HOLLOW thick ring + thick check,
+//  #36D167, 110pt, anchored at the green card's bottom-right corner
+//  overflowing outward (+27 right / +31 down).
+//  The overflow only works because the green card is TALLER than the right
+//  column (height = right column + 90) AND the row is top-aligned
+//  (UIStackViewAlignmentTop, like KSU's Row default): the right column ends
+//  90pt above the card's bottom, the badge's top is at bottom - 79, so
+//  11pt of empty space sits between the badge and the white cards, and
+//  the 44pt gap below the row clears the 31pt downward overflow from the
+//  info card. v2.1/v2.2 used alignment Fill, which stretched the right
+//  column to the card's height — the badge then overlapped the white card
+//  by 79pt vertically and 14pt horizontally, and the card (drawn on top)
+//  covered its right half. The test file encodes this layout math.
+//  (Design history, 2026-11-10: the 19:17 full-width rectangle and the
+//  19:20 white-card variants were both rejected by the user; the final
+//  direction, 19:28, is this 1:1 KSU home.)
 //  No emoji anywhere; SF Symbols only.
 //
 
@@ -16,6 +31,43 @@
 #import "CLGrant.h"
 #import "CLUI.h"
 #import <sys/sysctl.h>
+
+// Check badge, drawn (v2.3): KernelSU's Icons.Rounded.CheckCircleOutline —
+// a HOLLOW thick ring + thick check, both #36D167, on the card's green.
+// Not a filled circle (the user rejected the white-card variant's solid
+// badge) and not an SF Symbol (checkmark.circle is a thin ring).
+@interface CLCheckBadgeView : UIView
+@end
+
+@implementation CLCheckBadgeView
+
+- (instancetype)init
+{
+    self = [super init];
+    if (self) self.backgroundColor = UIColor.clearColor;
+    return self;
+}
+
+- (void)drawRect:(CGRect)rect
+{
+    CGFloat s = MIN(rect.size.width, rect.size.height);
+    UIColor *green = [UIColor colorWithRed:0x36 / 255.0 green:0xD1 / 255.0 blue:0x67 / 255.0 alpha:1];
+    CGFloat w = s * 0.11;  // ~12pt stroke, like the Rounded outline icon
+    [green setStroke];
+    UIBezierPath *ring = [UIBezierPath bezierPathWithOvalInRect:CGRectInset(CGRectMake(0, 0, s, s), w / 2, w / 2)];
+    ring.lineWidth = w;
+    [ring stroke];
+    UIBezierPath *check = [UIBezierPath new];
+    [check moveToPoint:CGPointMake(s * 0.28, s * 0.53)];
+    [check addLineToPoint:CGPointMake(s * 0.44, s * 0.69)];
+    [check addLineToPoint:CGPointMake(s * 0.74, s * 0.34)];
+    check.lineWidth = w;
+    check.lineCapStyle = kCGLineCapRound;
+    check.lineJoinStyle = kCGLineJoinRound;
+    [check stroke];
+}
+
+@end
 
 static NSString *cl_device_model(void)
 {
@@ -26,12 +78,18 @@ static NSString *cl_device_model(void)
     sysctlbyname("hw.machine", machine, &size, NULL, 0);
     NSString *identifier = [NSString stringWithUTF8String:machine];
     free(machine);
-    // iPhone 17 family (iPhone18,x); anything else falls back to the raw id.
+    // iPhone 17 family (iPhone18,x), verified against Apple's device codes
+    // (Lirum Labs / theiphonewiki, 2026-11-10). v2.0–v2.2 had 18,1/18,2/18,3
+    // swapped (18,1→"iPhone 17", 18,2→"iPhone 17 Pro", 18,3→"iPhone 17 Pro
+    // Max"), so the info card showed the wrong model on the user's phone
+    // (it reports iPhone18,3 = iPhone 17, not Pro Max). Anything else falls
+    // back to the raw id.
     NSDictionary *known = @{
-        @"iPhone18,1": @"iPhone 17",
-        @"iPhone18,2": @"iPhone 17 Pro",
-        @"iPhone18,3": @"iPhone 17 Pro Max",
+        @"iPhone18,1": @"iPhone 17 Pro",
+        @"iPhone18,2": @"iPhone 17 Pro Max",
+        @"iPhone18,3": @"iPhone 17",
         @"iPhone18,4": @"iPhone Air",
+        @"iPhone18,5": @"iPhone 17e",
     };
     return known[identifier] ?: identifier ?: @"iPhone";
 }
@@ -66,6 +124,10 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
 @property (nonatomic, strong) UILabel *statusTitleLabel;
 @property (nonatomic, strong) UILabel *statusModeLabel;
 @property (nonatomic, strong) UILabel *statusVersionLabel;
+// The 110pt hollow green check (authorized state only, overflowing the
+// card's bottom-right corner) and the SF Symbol icon for the other states
+// (88pt, inside the card). Only one is visible at a time.
+@property (nonatomic, strong) CLCheckBadgeView *checkBadgeView;
 @property (nonatomic, strong) UIImageView *statusIconView;
 @property (nonatomic, strong) UILabel *appCountLabel;
 @property (nonatomic, strong) UILabel *reclaimableLabel;
@@ -113,14 +175,14 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     if (store.lastScanFinished > 0 || store.scanning) return;
     if (!self.scanner) self.scanner = [CLCacheScanner new];
     store.scanning = YES;
-    [self.scanner startWithProgress:nil completion:^(NSArray<CLCacheItem *> *items, BOOL limited, NSString *__unused note, BOOL cancelled) {
+    [self.scanner startWithProgress:nil completion:^(NSArray<CLCacheItem *> *items, BOOL limited, NSString *__unused note, BOOL cancelled, NSUInteger totalApps) {
         if (cancelled) {
             // The Home scan was superseded (e.g. the Cleaner page started
             // its own). Do not touch the store; the other scan owns it now.
             [CLCacheStore shared].scanning = NO;
             return;
         }
-        [[CLCacheStore shared] updateWithItems:items limited:limited];
+        [[CLCacheStore shared] updateWithItems:items limited:limited totalApps:totalApps];
     }];
 }
 
@@ -132,8 +194,11 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         return;
     }
     CLCacheStore *store = [CLCacheStore shared];
+    // totalAppCount (v2.3), NOT appCount: appCount drops apps under 64 KB,
+    // so after a clean it fell to 0 — the v2.3 bug. totalAppCount is the
+    // count of containers actually measured, independent of cache size.
     self.appCountLabel.text = store.lastScanFinished > 0
-        ? [NSString stringWithFormat:@"%lu", (unsigned long)store.appCount] : @"–";
+        ? [NSString stringWithFormat:@"%lu", (unsigned long)store.totalAppCount] : @"–";
     self.reclaimableLabel.text = store.lastScanFinished > 0
         ? cl_size_text(store.totalBytes) : @"–";
     [self.scrollView.refreshControl endRefreshing];
@@ -168,7 +233,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
 
 - (void)refreshStatus
 {
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.2";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.3";
     BOOL supported = cl_system_supported();
     BOOL hasGroup = cl_app_group() != nil;
     if (!supported) {
@@ -182,19 +247,31 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         self.state = self.probeRestricted ? CLHomeStateRestricted : CLHomeStateAuthorized;
     }
 
+    // Authorized: KSU's light-green card (#DFFAE4), black texts, hollow
+    // green check badge overflowing the corner. The other states keep v2's
+    // amber/red/grey cards with a plain SF Symbol icon inside the card
+    // (no overflow).
     switch (self.state) {
         case CLHomeStateAuthorized:
             self.statusCard.backgroundColor = [self cardColorLight:0xDFFAE4 dark:0x1A3825];
             self.statusTitleLabel.text = @"已授权";
+            self.statusTitleLabel.textColor = UIColor.labelColor;
             self.statusModeLabel.text = @"<App Group> [沙盒模式]";
-            self.statusIconView.image = [UIImage systemImageNamed:@"checkmark.circle"];
-            self.statusIconView.tintColor = [UIColor colorWithRed:0x36 / 255.0 green:0xD1 / 255.0 blue:0x67 / 255.0 alpha:1];
+            self.statusModeLabel.textColor = UIColor.labelColor;
+            self.statusVersionLabel.textColor = UIColor.labelColor;
+            self.checkBadgeView.hidden = NO;
+            self.statusIconView.hidden = YES;
             self.warningCard.hidden = YES;
             break;
         case CLHomeStateRestricted:
             self.statusCard.backgroundColor = [self cardColorLight:0xFFF3D6 dark:0x3A2E12];
             self.statusTitleLabel.text = @"受限";
+            self.statusTitleLabel.textColor = UIColor.labelColor;
             self.statusModeLabel.text = @"沙盒授权不完整";
+            self.statusModeLabel.textColor = UIColor.labelColor;
+            self.statusVersionLabel.textColor = UIColor.labelColor;
+            self.checkBadgeView.hidden = YES;
+            self.statusIconView.hidden = NO;
             self.statusIconView.image = [UIImage systemImageNamed:@"exclamationmark.triangle.fill"];
             self.statusIconView.tintColor = UIColor.systemOrangeColor;
             self.warningCard.backgroundColor = [self cardColorLight:0xFFF3D6 dark:0x3A2E12];
@@ -204,7 +281,12 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         case CLHomeStateUnauthorized:
             self.statusCard.backgroundColor = [self cardColorLight:0xF9DEDC dark:0x5C1A1A];
             self.statusTitleLabel.text = @"未授权";
+            self.statusTitleLabel.textColor = UIColor.labelColor;
             self.statusModeLabel.text = @"未获得 App Group";
+            self.statusModeLabel.textColor = UIColor.labelColor;
+            self.statusVersionLabel.textColor = UIColor.labelColor;
+            self.checkBadgeView.hidden = YES;
+            self.statusIconView.hidden = NO;
             self.statusIconView.image = [UIImage systemImageNamed:@"exclamationmark.triangle.fill"];
             self.statusIconView.tintColor = UIColor.systemRedColor;
             self.warningCard.backgroundColor = [self cardColorLight:0xF9DEDC dark:0x5C1A1A];
@@ -214,7 +296,12 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         case CLHomeStateUnsupported:
             self.statusCard.backgroundColor = [self cardColorLight:0xF9DEDC dark:0x5C1A1A];
             self.statusTitleLabel.text = @"不支持";
+            self.statusTitleLabel.textColor = UIColor.labelColor;
             self.statusModeLabel.text = @"当前系统不受支持";
+            self.statusModeLabel.textColor = UIColor.labelColor;
+            self.statusVersionLabel.textColor = UIColor.labelColor;
+            self.checkBadgeView.hidden = YES;
+            self.statusIconView.hidden = NO;
             self.statusIconView.image = [UIImage systemImageNamed:@"xmark.octagon.fill"];
             self.statusIconView.tintColor = UIColor.systemRedColor;
             self.warningCard.backgroundColor = [self cardColorLight:0xF9DEDC dark:0x5C1A1A];
@@ -224,7 +311,12 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         case CLHomeStateChecking:
             self.statusCard.backgroundColor = UIColor.systemGray5Color;
             self.statusTitleLabel.text = @"正在检查…";
+            self.statusTitleLabel.textColor = UIColor.labelColor;
             self.statusModeLabel.text = @"正在确认沙盒授权…";
+            self.statusModeLabel.textColor = UIColor.labelColor;
+            self.statusVersionLabel.textColor = UIColor.labelColor;
+            self.checkBadgeView.hidden = YES;
+            self.statusIconView.hidden = NO;
             self.statusIconView.image = [UIImage systemImageNamed:@"hourglass"];
             self.statusIconView.tintColor = UIColor.secondaryLabelColor;
             self.warningCard.hidden = YES;
@@ -303,9 +395,9 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     UIView *card = [UIView new];
     card.backgroundColor = UIColor.systemBackgroundColor;
     card.layer.cornerRadius = 28;
-    UILabel *titleLabel = [self makeLabel:title font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
+    UILabel *titleLabel = [self makeLabel:title font:[UIFont systemFontOfSize:16 weight:UIFontWeightRegular]
                                     color:UIColor.secondaryLabelColor];
-    valueLabel.font = [UIFont systemFontOfSize:34 weight:UIFontWeightBold];
+    valueLabel.font = [UIFont systemFontOfSize:36 weight:UIFontWeightBold];
     valueLabel.textColor = UIColor.labelColor;
     valueLabel.adjustsFontSizeToFitWidth = YES;
     valueLabel.minimumScaleFactor = 0.6;
@@ -425,7 +517,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     self.statusModeLabel = [self makeLabel:@"<App Group> [沙盒模式]" font:[UIFont systemFontOfSize:15 weight:UIFontWeightMedium]
                                      color:UIColor.labelColor];
     self.statusModeLabel.numberOfLines = 2;
-    self.statusVersionLabel = [self makeLabel:@"版本：0.2.2" font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
+    self.statusVersionLabel = [self makeLabel:@"版本：0.2.3" font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
                                         color:UIColor.labelColor];
     UIStackView *statusTexts = [[UIStackView alloc] initWithArrangedSubviews:@[
         self.statusTitleLabel, self.statusModeLabel, self.statusVersionLabel]];
@@ -438,16 +530,30 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         [statusTexts.trailingAnchor constraintEqualToAnchor:status.trailingAnchor constant:-16],
         [statusTexts.topAnchor constraintEqualToAnchor:status.topAnchor constant:14],
     ]];
-    // Check circle, v2.2: FULLY INSIDE the green card, 88pt, 12pt inset from
-    // the right and bottom edges. KSU's original (110pt, offset +27/+31
-    // beyond the corner, HomeMiuix.kt) cannot work in this layout: the gap
-    // between the green card and the right column is 13pt, so any rightward
-    // overflow of 13pt or more intersects the white card — and the white
-    // card is drawn on top, so the circle's right half disappears under it
-    // (exactly what the v2.1 device screenshot showed). v2.1's 44pt gap
-    // below the row only fixed the VERTICAL collision with the info card,
-    // not this horizontal one. With the circle inside, its frame can never
-    // intersect any other card; it is also brought to the front of the row.
+    // Check badge, v2.3: KSU's CheckCircleOutline — hollow #36D167 ring +
+    // thick check, 110pt, anchored at the green card's bottom-right corner
+    // overflowing outward (+27 right / +31 down, HomeMiuix.kt).
+    // It only clears the white cards because the green card is taller
+    // than the right column (height = right column + 90, below) AND the
+    // row is top-aligned: the right column ends 90pt above the card's
+    // bottom, the badge's top is at bottom - 79, so 11pt of empty space
+    // sits between the badge and the white cards. v2.1/v2.2 used alignment
+    // Fill, which stretched the right column to the card's height — the
+    // badge then overlapped the white card by 79pt vertically and 14pt
+    // horizontally, and the card (drawn on top) covered its right half.
+    // The badge is a subview of the card, drawn above it; the 44pt gap
+    // below the row (set after the row is added) clears the 31pt downward
+    // overflow from the info card.
+    self.checkBadgeView = [CLCheckBadgeView new];
+    self.checkBadgeView.translatesAutoresizingMaskIntoConstraints = NO;
+    [status addSubview:self.checkBadgeView];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.checkBadgeView.widthAnchor constraintEqualToConstant:110],
+        [self.checkBadgeView.heightAnchor constraintEqualToConstant:110],
+        [self.checkBadgeView.trailingAnchor constraintEqualToAnchor:status.trailingAnchor constant:27],
+        [self.checkBadgeView.bottomAnchor constraintEqualToAnchor:status.bottomAnchor constant:31],
+    ]];
+    // The other states' icon: 88pt, fully INSIDE the card (no overflow).
     self.statusIconView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark.circle"]];
     self.statusIconView.contentMode = UIViewContentModeScaleAspectFit;
     self.statusIconView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -458,7 +564,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         [self.statusIconView.trailingAnchor constraintEqualToAnchor:status.trailingAnchor constant:-12],
         [self.statusIconView.bottomAnchor constraintEqualToAnchor:status.bottomAnchor constant:-12],
     ]];
-    [status bringSubviewToFront:self.statusIconView];
+    [status bringSubviewToFront:self.checkBadgeView];
     [status addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(statusCardTapped)]];
 
     self.appCountLabel = [UILabel new];
@@ -473,26 +579,29 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     UIStackView *statusRow = [[UIStackView alloc] initWithArrangedSubviews:@[status, rightColumn]];
     statusRow.axis = UILayoutConstraintAxisHorizontal;
     statusRow.spacing = 13;
-    statusRow.alignment = UIStackViewAlignmentFill;
+    // Top alignment, not Fill: the right column must NOT be stretched to
+    // the status card's height — it stays at its intrinsic height, top
+    // aligned, leaving the 90pt of empty space the badge overflows into.
+    statusRow.alignment = UIStackViewAlignmentTop;
     [NSLayoutConstraint activateConstraints:@[
         [status.widthAnchor constraintEqualToAnchor:statusRow.widthAnchor multiplier:0.55],
-        // Minimum height: the three text lines end ~97pt from the top; the
-        // 88pt circle starts at (height - 100). 212pt leaves 15pt between
-        // the text and the circle. The row height is max(green, right
-        // column), so both sides end at the same bottom edge.
+        // The status card is 90pt taller than the right column. The badge
+        // spans bottom-79..bottom+31; the right column ends at bottom-90.
+        // Clearance: 90 - (110 - 31) = 11pt above the white cards.
+        [status.heightAnchor constraintEqualToAnchor:rightColumn.heightAnchor constant:90],
         [status.heightAnchor constraintGreaterThanOrEqualToConstant:212],
     ]];
     [content addArrangedSubview:statusRow];
     [statusRow bringSubviewToFront:status];
-    // v2.2: no overflow any more, so the gap below the row is the standard
-    // 13pt (the v2.1 44pt was only there to clear the overflowing circle).
-    [content setCustomSpacing:13 afterView:statusRow];
+    // 44pt gap below the row: the badge overflows 31pt below the card, so
+    // 13pt of clear space remains before the info card.
+    [content setCustomSpacing:44 afterView:statusRow];
 
     // Info card: one white rounded card, icon + bold title + grey value.
     UIView *info = [UIView new];
     info.backgroundColor = UIColor.systemBackgroundColor;
     info.layer.cornerRadius = 28;
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.2";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.3";
     NSString *build = NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"1";
     self.groupStatusValueLabel = [UILabel new];
     NSArray<UIView *> *rows = @[

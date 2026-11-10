@@ -7,9 +7,24 @@
 
 #import "CLCleanerViewController.h"
 #import "CLCache.h"
+#import "CLCustomCleanViewController.h"
 #import "CLGrant.h"
 #import "CLScan.h"
 #import "CLUI.h"
+
+// Scan progress fraction from a progress string like
+// "正在测量应用 23/114…". -1 when the string carries no N/M (e.g. the
+// "正在查找应用… 42%" phase), so the bar falls back to the selected share.
+static CGFloat CLCacheScanFraction(NSString *status)
+{
+    NSScanner *sc = [NSScanner scannerWithString:status ?: @""];
+    NSInteger done = 0, total = 0;
+    if (![sc scanUpToCharactersFromSet:NSCharacterSet.decimalDigitCharacterSet intoString:nil]) return -1;
+    if (![sc scanInteger:&done]) return -1;
+    if (![sc scanString:@"/" intoString:nil]) return -1;
+    if (![sc scanInteger:&total] || total <= 0) return -1;
+    return (CGFloat)done / (CGFloat)total;
+}
 
 static void CLCacheSelectionCategories(NSArray<CLCacheItem *> *items,
                                        BOOL *hasApps,
@@ -65,6 +80,9 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
 @interface CLCleanerCell : UITableViewCell
 @property (nonatomic, strong) UIImageView *checkView, *iconView;
 @property (nonatomic, strong) UILabel *nameLabel, *detailLabel, *sizeLabel;
+// Spinner shown while this row is being cleaned (v2.3); it occupies the
+// check's slot so the row does not shift when the state changes.
+@property (nonatomic, strong) UIActivityIndicatorView *cleanSpinner;
 @end
 
 @implementation CLCleanerCell
@@ -74,6 +92,8 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
     if ((self = [super initWithStyle:style reuseIdentifier:reuseIdentifier])) {
         _checkView = [UIImageView new];
         _checkView.contentMode = UIViewContentModeScaleAspectFit;
+        _cleanSpinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+        _cleanSpinner.hidesWhenStopped = YES;
         _iconView = [UIImageView new];
         _iconView.contentMode = UIViewContentModeScaleAspectFit;
         _iconView.layer.cornerRadius = 8;
@@ -89,7 +109,7 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
         _sizeLabel = [UILabel new];
         _sizeLabel.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightSemibold];
         _sizeLabel.textAlignment = NSTextAlignmentRight;
-        for (UIView *v in @[_checkView, _iconView, _nameLabel, _detailLabel, _sizeLabel]) {
+        for (UIView *v in @[_checkView, _cleanSpinner, _iconView, _nameLabel, _detailLabel, _sizeLabel]) {
             v.translatesAutoresizingMaskIntoConstraints = NO;
             [self.contentView addSubview:v];
         }
@@ -101,6 +121,8 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
             [_checkView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
             [_checkView.widthAnchor constraintEqualToConstant:24],
             [_checkView.heightAnchor constraintEqualToConstant:24],
+            [_cleanSpinner.centerXAnchor constraintEqualToAnchor:_checkView.centerXAnchor],
+            [_cleanSpinner.centerYAnchor constraintEqualToAnchor:_checkView.centerYAnchor],
             [_iconView.leadingAnchor constraintEqualToAnchor:_checkView.trailingAnchor constant:12],
             [_iconView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
             [_iconView.widthAnchor constraintEqualToConstant:36],
@@ -123,10 +145,12 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
 @end
 
 // Summary card: reclaimable total, a bar for the selected share, status.
+// doneView (v2.3) is the green check that springs in when a clean finishes.
 @interface CLSummaryCell : UITableViewCell
 @property (nonatomic, strong) UILabel *captionLabel, *totalLabel, *statusLabel;
 @property (nonatomic, strong) UIProgressView *bar;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
+@property (nonatomic, strong) UIImageView *doneView;
 @end
 
 @implementation CLSummaryCell
@@ -150,7 +174,16 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
         _statusLabel.numberOfLines = 0;
         _spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
         _spinner.hidesWhenStopped = YES;
-        UIStackView *captionRow = [[UIStackView alloc] initWithArrangedSubviews:@[_captionLabel, _spinner]];
+        _doneView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark.circle.fill"]];
+        _doneView.tintColor = UIColor.systemGreenColor;
+        _doneView.contentMode = UIViewContentModeScaleAspectFit;
+        _doneView.hidden = YES;
+        _doneView.translatesAutoresizingMaskIntoConstraints = NO;
+        [NSLayoutConstraint activateConstraints:@[
+            [_doneView.widthAnchor constraintEqualToConstant:28],
+            [_doneView.heightAnchor constraintEqualToConstant:28],
+        ]];
+        UIStackView *captionRow = [[UIStackView alloc] initWithArrangedSubviews:@[_captionLabel, _doneView, _spinner]];
         captionRow.spacing = 8;
         captionRow.alignment = UIStackViewAlignmentCenter;
         UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[captionRow, _totalLabel, _bar, _statusLabel]];
@@ -183,6 +216,20 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
     CLCacheScanner *_scanner;
     NSUInteger _scanGeneration;
     NSTimeInterval _lastScanFinished;
+    // v2.3 animations: scan progress fraction (-1 = no N/M in the status),
+    // the row being cleaned, rows already cleaned, and the total-countdown
+    // display-link state. _pendingShortcutAction is a shortcut (cleaner://)
+    // that arrived while a scan was running.
+    CGFloat _scanFraction;
+    CLCacheItem *_cleaningItem;
+    NSMutableSet<CLCacheItem *> *_cleanedItems;
+    CADisplayLink *_totalDisplayLink;
+    unsigned long long _displayedTotal;
+    unsigned long long _totalAnimFrom;
+    unsigned long long _totalAnimTarget;
+    NSTimeInterval _totalAnimStart;
+    BOOL _lastCleanSucceeded;
+    NSString *_pendingShortcutAction;
 }
 
 - (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
@@ -191,7 +238,8 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
 {
     [super viewDidLoad];
     self.title = @"缓存清理";
-    self.tableView.tableHeaderView = cl_device_header(self.view.bounds.size.width);
+    // v2.3: no device/model-id strip under the search field (user: the
+    // iPhone17 (iPhone18,3) line is noise). The search bar is the header.
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
     search.searchResultsUpdater = self;
     search.obscuresBackgroundDuringPresentation = NO;
@@ -287,9 +335,14 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
                                      identifier:nil handler:^(UIAction *__unused a) {
         [weakSelf selectWhere:^BOOL(CLCacheItem *__unused it) { return it.bytes >= 50ull * 1000 * 1000; }];
     }];
+    // v2.3: custom cleaning — user-defined rules, presets and excludes.
+    UIAction *custom = [UIAction actionWithTitle:@"自定义清理…" image:[UIImage systemImageNamed:@"slider.horizontal.3"]
+                                     identifier:nil handler:^(UIAction *__unused a) {
+        [weakSelf.navigationController pushViewController:[CLCustomCleanViewController new] animated:YES];
+    }];
     all.state = allVisible ? UIMenuElementStateOn : UIMenuElementStateOff;
     UIBarButtonItem *select = [[UIBarButtonItem alloc] initWithTitle:@"选择"
-                                                                menu:[UIMenu menuWithChildren:@[all, none, large]]];
+                                                                menu:[UIMenu menuWithChildren:@[all, none, large, custom]]];
     select.enabled = visible.count > 0;
     self.navigationItem.rightBarButtonItems = @[clean, select];
 }
@@ -310,6 +363,12 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
     _scanning = YES;
     _scanLimited = NO;
     _result = nil;
+    _scanFraction = -1;
+    _cleaningItem = nil;
+    _cleanedItems = nil;
+    _lastCleanSucceeded = NO;
+    [_totalDisplayLink invalidate];
+    _totalDisplayLink = nil;
     // Tell Home not to start a second scan while this one runs.
     [[CLCacheStore shared] setScanning:YES];
     [self updateButtons];
@@ -318,10 +377,13 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
     // v2.2: incremental results — finished rows appear in batches of 8
     // while the scan runs (merged, re-sorted, reloaded); the final
     // completion below still delivers the complete list as authoritative.
+    // v2.3: batches insert with a fade instead of reloadData, and the
+    // progress bar shows the real scan fraction (N/M) while scanning.
     [_scanner startWithProgress:^(NSString *status) {
         dispatch_async(dispatch_get_main_queue(), ^{
             typeof(self) strongSelf = weakSelf;
             if (!strongSelf || generation != strongSelf->_scanGeneration) return;
+            strongSelf->_scanFraction = CLCacheScanFraction(status);
             [strongSelf setStatus:status];
         });
     } itemsUpdate:^(NSArray<CLCacheItem *> *newItems) {
@@ -333,10 +395,30 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
                 return a.bytes > b.bytes ? NSOrderedAscending : (a.bytes < b.bytes ? NSOrderedDescending : NSOrderedSame);
             }];
             [strongSelf rebuildVisibleItems];
-            [strongSelf.tableView reloadData];
+            // Insert the new rows with a fade (v2.3) instead of reloading
+            // the whole table — the list visibly grows while scanning.
+            // While searching the visible list is filtered, so fall back
+            // to a plain reload there.
+            if (!strongSelf->_query.length) {
+                NSMutableArray<NSIndexPath *> *paths = [NSMutableArray new];
+                for (CLCacheItem *item in newItems) {
+                    NSUInteger row = [strongSelf->_items indexOfObjectIdenticalTo:item];
+                    if (row != NSNotFound) [paths addObject:[NSIndexPath indexPathForRow:row inSection:1]];
+                }
+                if (paths.count) {
+                    [strongSelf.tableView beginUpdates];
+                    [strongSelf.tableView insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+                    [strongSelf.tableView endUpdates];
+                    // insertRows does not refresh the section header count.
+                    UITableViewHeaderFooterView *header = [strongSelf.tableView headerViewForSection:1];
+                    if (header) header.textLabel.text = [strongSelf tableView:strongSelf.tableView titleForHeaderInSection:1];
+                }
+            } else {
+                [strongSelf.tableView reloadData];
+            }
             [strongSelf updateButtons];
         });
-    } completion:^(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled) {
+    } completion:^(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled, NSUInteger totalApps) {
         dispatch_async(dispatch_get_main_queue(), ^{
             typeof(self) strongSelf = weakSelf;
             if (!strongSelf || generation != strongSelf->_scanGeneration) return;
@@ -346,6 +428,7 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
                 // appear instead of staying stuck on "scanning".
                 strongSelf->_scanning = NO;
                 strongSelf->_status = note;
+                strongSelf->_scanFraction = -1;
                 [strongSelf.refreshControl endRefreshing];
                 [strongSelf.tableView reloadData];
                 [strongSelf updateButtons];
@@ -357,11 +440,36 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
             strongSelf->_scanning = NO;
             strongSelf->_scanLimited = limited;
             strongSelf->_status = note;
+            strongSelf->_scanFraction = -1;
             strongSelf->_lastScanFinished = NSDate.date.timeIntervalSinceReferenceDate;
             [strongSelf.refreshControl endRefreshing];
             [strongSelf.tableView reloadData];
             [strongSelf updateButtons];
-            [[CLCacheStore shared] updateWithItems:items limited:limited];
+            [[CLCacheStore shared] updateWithItems:items limited:limited totalApps:totalApps];
+            // A shortcut (cleaner://) that arrived mid-scan runs now.
+            if (strongSelf->_pendingShortcutAction) {
+                NSString *action = strongSelf->_pendingShortcutAction;
+                strongSelf->_pendingShortcutAction = nil;
+                [strongSelf startShortcutAction:action];
+            }
+            // The previous clean succeeded: spring the green check into
+            // the summary card (v2.3) with a success haptic.
+            if (strongSelf->_lastCleanSucceeded) {
+                strongSelf->_lastCleanSucceeded = NO;
+                CLSummaryCell *cell = (CLSummaryCell *)[strongSelf.tableView cellForRowAtIndexPath:
+                                                        [NSIndexPath indexPathForRow:0 inSection:0]];
+                if (cell) {
+                    cell.doneView.hidden = NO;
+                    cell.doneView.transform = CGAffineTransformMakeScale(0.3, 0.3);
+                    cell.doneView.alpha = 0;
+                    [UIView animateWithDuration:0.5 delay:0 usingSpringWithDamping:0.6
+                              initialSpringVelocity:0 options:0 animations:^{
+                        cell.doneView.transform = CGAffineTransformIdentity;
+                        cell.doneView.alpha = 1;
+                    } completion:nil];
+                    [UINotificationFeedbackGenerator.new notificationOccurred:UINotificationFeedbackTypeSuccess];
+                }
+            }
         });
     }];
 }
@@ -405,8 +513,17 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
         BOOL busy = _scanning || _cleaning;
         cell.captionLabel.text = busy ? (_cleaning ? @"正在清理…" : @"正在扫描…") : @"可清理";
         if (busy) [cell.spinner startAnimating]; else [cell.spinner stopAnimating];
-        cell.totalLabel.text = (_scanning && !_items.count) ? @"–" : cl_size_text(total);
-        cell.bar.progress = total ? (float)((double)selected / (double)total) : 0;
+        // The success check is transient: a reused cell always starts hidden;
+        // the spring animation after a successful clean unhides the visible one.
+        cell.doneView.hidden = YES;
+        // While cleaning, the big total is the animated countdown value
+        // (v2.3); otherwise it is the live total.
+        cell.totalLabel.text = (_scanning && !_items.count) ? @"–"
+            : cl_size_text(_cleaning ? _displayedTotal : total);
+        // While scanning, the bar is the real scan fraction (N/M) when the
+        // status carries one; otherwise the selected share as before.
+        cell.bar.progress = _scanning && _scanFraction >= 0 ? (float)_scanFraction
+            : (total ? (float)((double)selected / (double)total) : 0);
         cell.bar.hidden = _scanning && !_items.count;
         cell.statusLabel.text = _status ?: _result
             ?: [NSString stringWithFormat:@"已选 %@ · %lu 个应用", cl_size_text(selected), (unsigned long)n];
@@ -428,8 +545,23 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
     cell.iconView.image = cl_app_icon(item.bundleID)
         ?: [UIImage systemImageNamed:item.bundleID ? @"app.dashed" : @"exclamationmark.triangle"];
     cell.iconView.tintColor = UIColor.secondaryLabelColor;
-    cell.checkView.image = [UIImage systemImageNamed:item.selected ? @"checkmark.circle.fill" : @"circle"];
-    cell.checkView.tintColor = item.selected ? UIColor.systemBlueColor : UIColor.tertiaryLabelColor;
+    // v2.3 cleaning states: the row being cleaned shows a spinner in the
+    // check's slot; a cleaned row shows a green check; otherwise the
+    // selection check as before.
+    if (item == _cleaningItem) {
+        cell.checkView.hidden = YES;
+        [cell.cleanSpinner startAnimating];
+    } else if ([_cleanedItems containsObject:item]) {
+        [cell.cleanSpinner stopAnimating];
+        cell.checkView.hidden = NO;
+        cell.checkView.image = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+        cell.checkView.tintColor = UIColor.systemGreenColor;
+    } else {
+        [cell.cleanSpinner stopAnimating];
+        cell.checkView.hidden = NO;
+        cell.checkView.image = [UIImage systemImageNamed:item.selected ? @"checkmark.circle.fill" : @"circle"];
+        cell.checkView.tintColor = item.selected ? UIColor.systemBlueColor : UIColor.tertiaryLabelColor;
+    }
     return cell;
 }
 
@@ -450,6 +582,63 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
 }
 
 #pragma mark Actions
+
+// v2.3: animate the big total from its current value down to `target`
+// over 0.4 s (ease-out) with a display link, so the number visibly counts
+// down as cache is freed instead of jumping. Writes straight into the
+// visible summary cell; cellForRow keeps _displayedTotal as the source
+// while cleaning, so a section reload mid-animation cannot jump it.
+- (void)animateTotalTo:(unsigned long long)target
+{
+    [_totalDisplayLink invalidate];
+    _totalAnimFrom = _displayedTotal;
+    _totalAnimTarget = target;
+    _totalAnimStart = CACurrentMediaTime();
+    _totalDisplayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(totalAnimTick)];
+    [_totalDisplayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+}
+
+- (void)totalAnimTick
+{
+    NSTimeInterval t = (CACurrentMediaTime() - _totalAnimStart) / 0.4;
+    if (t >= 1) {
+        [_totalDisplayLink invalidate];
+        _totalDisplayLink = nil;
+        _displayedTotal = _totalAnimTarget;
+    } else {
+        CGFloat e = 1 - pow(1 - t, 3);
+        _displayedTotal = _totalAnimFrom + (unsigned long long)((double)(_totalAnimTarget - _totalAnimFrom) * (double)e);
+    }
+    CLSummaryCell *cell = (CLSummaryCell *)[self.tableView cellForRowAtIndexPath:
+                                            [NSIndexPath indexPathForRow:0 inSection:0]];
+    if (cell) cell.totalLabel.text = cl_size_text(_displayedTotal);
+}
+
+- (unsigned long long)currentTotalBytes
+{
+    unsigned long long total = 0;
+    for (CLCacheItem *it in _items) total += it.bytes;
+    return total;
+}
+
+// iPhone Shortcuts (cleaner://clean, cleaner://scan). clean selects all
+// cleanable rows and shows the usual confirm dialog — the shortcut never
+// deletes without the user confirming in the app.
+- (void)startShortcutAction:(NSString *)action
+{
+    if (_cleaning) return;
+    if (_scanning) {
+        _pendingShortcutAction = action;
+        return;
+    }
+    if ([action isEqualToString:@"scan"]) {
+        [self userRefresh];
+        return;
+    }
+    if (![action isEqualToString:@"clean"]) return;
+    [self selectWhere:^BOOL(CLCacheItem *__unused it) { return YES; }];
+    [self confirmClean];
+}
 
 // Applies to the rows the current search shows.
 - (void)selectWhere:(BOOL (^)(CLCacheItem *item))rule
@@ -492,12 +681,19 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
     CLScanCancellation *cancellation = [CLScanCancellation new];
     _cleanCancellation = cancellation;
     _cleaning = YES;
+    _cleanedItems = [NSMutableSet new];
+    _cleaningItem = nil;
+    // The countdown starts at the current total; each finished item moves
+    // it down by exactly what was freed (v2.3, before/after accounting).
+    unsigned long long startTotal = [self currentTotalBytes];
+    _displayedTotal = startTotal;
     [self updateButtons];
     [self setStatus:@"正在清理…"];
     dispatch_async(cl_io(), ^{
         unsigned long long freed = 0;
         BOOL allOk = YES;
         BOOL cancelled = NO;
+        NSUInteger failedItems = 0;
         NSString *validationFailure = nil;
         for (CLCacheItem *item in selected) {
             if (cancellation.isCancelled) { cancelled = YES; break; }
@@ -526,26 +722,59 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
             if (cancellation.isCancelled) { cancelled = YES; break; }
             i++;
             dispatch_async(dispatch_get_main_queue(), ^{
+                // Per-row progress (v2.3): spinner in the check's slot.
+                self->_cleaningItem = item;
+                NSUInteger row = [self.visibleItems indexOfObjectIdenticalTo:item];
+                if (row != NSNotFound) {
+                    [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:row inSection:1]]
+                                          withRowAnimation:UITableViewRowAnimationNone];
+                }
                 [self setStatus:[NSString stringWithFormat:@"正在清理第 %lu / %lu 个：%@",
                                  (unsigned long)i, (unsigned long)selected.count, item.name]];
             });
+            unsigned long long beforeItem = freed;
+            BOOL itemOk = YES;
             for (CLCacheTargetRecord *record in item.targetRecords) {
                 if (cancellation.isCancelled) { cancelled = YES; break; }
                 NSString *reason = nil;
                 if (!CLCacheValidateItem(item, &reason)) {
                     allOk = NO;
+                    itemOk = NO;
                     validationFailure = [NSString stringWithFormat:@"%@ (%@)", item.name, reason ?: @"身份已变化"];
                     cl_log(@"clean: stopped before %@ because %@", record.path, reason ?: @"身份校验失败");
                     break;
                 }
                 if (!cl_purge_contents_cancellable(record.path, &freed, cancellation)) {
                     allOk = NO;
+                    itemOk = NO;
                     if (cancellation.isCancelled) { cancelled = YES; break; }
                 }
             }
+            unsigned long long itemFreed = freed - beforeItem;
+            cl_log(@"clean: %@ freed %llu bytes", item.name, itemFreed);
+            if (!itemOk) failedItems++;
+            // Per-row result + total countdown (v2.3). A fully cleaned row
+            // zeroes its size and gets a green check; a failed row keeps
+            // its size (the rescan after the clean corrects any remainder).
+            unsigned long long freedSoFar = freed;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (itemOk) {
+                    [self->_cleanedItems addObject:item];
+                    item.cacheBytes = 0;
+                    item.tempBytes = 0;
+                }
+                self->_cleaningItem = nil;
+                NSUInteger row = [self.visibleItems indexOfObjectIdenticalTo:item];
+                if (row != NSNotFound) {
+                    [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:row inSection:1]]
+                                          withRowAnimation:UITableViewRowAnimationFade];
+                }
+                [self animateTotalTo:startTotal >= freedSoFar ? startTotal - freedSoFar : 0];
+            });
             if (validationFailure || cancelled) break;
         }
-        cl_log(@"clean: freed %llu bytes, allOk=%d cancelled=%d", freed, allOk, cancelled);
+        cl_log(@"clean: freed %llu bytes, allOk=%d cancelled=%d failedItems=%lu",
+               freed, allOk, cancelled, (unsigned long)failedItems);
         dispatch_async(dispatch_get_main_queue(), ^{
             self->_cleaning = NO;
             self->_cleanCancellation = nil;
@@ -564,8 +793,11 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
             } else {
                 self->_status = nil;
                 [self scan];
+                // The post-clean scan springs the green check + haptic.
+                self->_lastCleanSucceeded = YES;
                 self->_result = [NSString stringWithFormat:@"已释放 %@。%@", cl_size_text(freed),
-                                 allOk ? @"" : @" 部分项目未能删除（详见日志）。"];
+                                 failedItems ? [NSString stringWithFormat:@"%lu 个项目未能完全删除（详见日志）。",
+                                              (unsigned long)failedItems] : @""];
             }
         });
     });

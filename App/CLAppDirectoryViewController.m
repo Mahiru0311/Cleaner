@@ -2,17 +2,22 @@
 //
 //  CLAppDirectoryViewController.m
 //  Cleaner v2.2 — read-only drill-down into one app's container.
+//  v2.3: folders get a swipe-to-clean action (purge contents only, with a
+//  confirm dialog; the container itself, Documents and Library stay behind
+//  the backup-first "清空数据" flow at the root level), and Caches
+//  subdirectories show their measured size from the scan breakdown.
 //
 //  Safety: navigation only ever goes one listed entry deeper, and every
 //  directory is checked before it is listed — canonical path must stay
 //  inside the app container, no symlink ancestry, symlinks are shown but
-//  never followed. Nothing here writes: backup / restore / clear go through
-//  CLAppActions (Core, with their own validation) from the root level only.
+//  never followed. Cleaning a folder goes through cl_purge_folder_contents
+//  (Core, same fd-relative no-follow removal as the cache purge).
 //
 
 #import "CLAppDirectoryViewController.h"
 #import "CLApp.h"
 #import "CLAppActions.h"
+#import "CLCache.h"
 #import "CLGrant.h"
 #import "CLSafety.h"
 #import "CLUI.h"
@@ -177,6 +182,23 @@ static BOOL cl_path_inside_container(NSString *path, NSString *container)
     [self.tableView reloadData];
     NSString *path = _path;
     NSString *container = _app.container;
+    // Caches subdirectory sizes from the last scan (v2.3): the scanner
+    // measures the top-5 Caches subdirectories, so this listing can show a
+    // folder's size without a second walk. Captured on the main thread —
+    // the store's items are replaced on the main thread too.
+    NSDictionary<NSString *, NSNumber *> *subdirSizes = nil;
+    if ([path isEqualToString:[container stringByAppendingPathComponent:@"Library/Caches"]]) {
+        for (CLCacheItem *it in [CLCacheStore shared].items) {
+            if ([it.bundleID isEqualToString:_app.bundleID] && it.cacheSubdirs.count) {
+                NSMutableDictionary *m = [NSMutableDictionary new];
+                for (NSDictionary *d in it.cacheSubdirs) {
+                    if (d[@"name"] && d[@"bytes"]) m[d[@"name"]] = d[@"bytes"];
+                }
+                subdirSizes = m;
+                break;
+            }
+        }
+    }
     dispatch_async(cl_io(), ^{
         NSMutableArray<CLDirEntry *> *entries = [NSMutableArray new];
         NSString *error = nil;
@@ -204,6 +226,9 @@ static BOOL cl_path_inside_container(NSString *path, NSString *container)
                 if (entry.isDirectory) {
                     NSArray *children = cl_list(full, NULL);
                     entry.childCount = children ? @(children.count) : nil;
+                    // The scan's Caches breakdown, when this is the folder.
+                    NSNumber *measured = subdirSizes[name];
+                    if (measured) entry.size = measured.unsignedLongLongValue;
                 }
                 [entries addObject:entry];
             }
@@ -237,7 +262,7 @@ static BOOL cl_path_inside_container(NSString *path, NSString *container)
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     if (_loading || _status || !_entries.count) return nil;
-    return @"只读浏览：点文件夹进入，点文件查看详情。备份、恢复、清空在根目录的导航栏里。";
+    return @"点文件夹进入，点文件查看详情；左滑文件夹可清空其内容。备份、恢复、清空数据在根目录的导航栏里。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -264,7 +289,15 @@ static BOOL cl_path_inside_container(NSString *path, NSString *container)
     if (entry.isDirectory) {
         c.image = [UIImage systemImageNamed:@"folder.fill"];
         c.imageProperties.tintColor = UIColor.systemBlueColor;
-        c.secondaryText = entry.childCount ? [NSString stringWithFormat:@"%@ 项", entry.childCount] : @"文件夹";
+        // A Caches subdirectory shows its scanned size (v2.3); other
+        // folders show the item count.
+        if (entry.size > 0 && entry.childCount) {
+            c.secondaryText = [NSString stringWithFormat:@"%@ · %@ 项", cl_size_text(entry.size), entry.childCount];
+        } else if (entry.size > 0) {
+            c.secondaryText = cl_size_text(entry.size);
+        } else {
+            c.secondaryText = entry.childCount ? [NSString stringWithFormat:@"%@ 项", entry.childCount] : @"文件夹";
+        }
     } else if (entry.isLink) {
         c.image = [UIImage systemImageNamed:@"link"];
         c.imageProperties.tintColor = UIColor.secondaryLabelColor;
@@ -305,6 +338,82 @@ static BOOL cl_path_inside_container(NSString *path, NSString *container)
     sheet.popoverPresentationController.sourceView = cell ?: self.view;
     sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
     [self presentViewController:sheet animated:YES completion:nil];
+}
+
+#pragma mark - Per-folder cleaning (v2.3)
+
+// Swipe a folder to empty it. Files and links get no action (files stay
+// read-only; links are never followed). The folder itself stays — only its
+// contents are removed, through cl_purge_folder_contents (containment +
+// no-symlink-ancestry validated in Core). Documents / Library subfolders
+// get an extra user-data warning; wiping an app's data entirely stays the
+// backup-first "清空数据" flow at the root level.
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (_loading || _status || !_entries.count || _busy) return nil;
+    CLDirEntry *entry = _entries[(NSUInteger)indexPath.row];
+    if (!entry.isDirectory) return nil;
+    __weak typeof(self) weakSelf = self;
+    UIContextualAction *clean = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
+        title:@"清空" handler:^(UIContextualAction *__unused action, UIView *__unused view,
+                               void (^completionHandler)(BOOL)) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) { completionHandler(NO); return; }
+        [strongSelf confirmCleanFolder:entry];
+        completionHandler(YES);
+    }];
+    clean.image = [UIImage systemImageNamed:@"trash"];
+    return [UISwipeActionsConfiguration configurationWithActions:@[clean]];
+}
+
+- (void)confirmCleanFolder:(CLDirEntry *)entry
+{
+    NSString *rel = [self relativePathForEntry:entry];
+    BOOL userData = [rel isEqualToString:@"Documents"] || [rel isEqualToString:@"Library"] ||
+                    [rel hasPrefix:@"Documents/"] || [rel hasPrefix:@"Library/"];
+    NSString *message = userData
+        ? [NSString stringWithFormat:@"删除「%@」里的全部内容。注意：这不是缓存目录，可能包含用户数据（聊天记录、下载、设置等），无法恢复。建议先在根目录备份。", entry.name]
+        : [NSString stringWithFormat:@"删除「%@」里的全部内容（文件夹本身保留）。无法撤销。", entry.name];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"清空文件夹？" message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"清空" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf->_busy = YES;
+        [strongSelf rebuildNavButtons];
+        NSString *path = entry.path;
+        NSString *container = strongSelf->_app.container;
+        dispatch_async(cl_io(), ^{
+            unsigned long long freed = 0;
+            NSString *reason = nil;
+            BOOL ok = cl_purge_folder_contents(path, container, &freed, &reason);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                typeof(self) innerSelf = weakSelf;
+                if (!innerSelf) return;
+                innerSelf->_busy = NO;
+                [innerSelf rebuildNavButtons];
+                [innerSelf reloadListing];
+                if (innerSelf.onDataChanged) innerSelf.onDataChanged();
+                cl_alert(innerSelf, ok ? @"已清空" : @"清空失败",
+                         ok ? [NSString stringWithFormat:@"已释放 %@。", cl_size_text(freed)]
+                            : (reason ?: @"无法清空该文件夹。"));
+            });
+        });
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+// Container-relative path of an entry (for the user-data warning).
+- (NSString *)relativePathForEntry:(CLDirEntry *)entry
+{
+    NSString *container = [_app.container stringByStandardizingPath];
+    NSString *path = [entry.path stringByStandardizingPath];
+    if ([path hasPrefix:[container stringByAppendingString:@"/"]])
+        return [path substringFromIndex:container.length + 1];
+    return entry.name;
 }
 
 @end

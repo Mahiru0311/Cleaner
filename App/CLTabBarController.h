@@ -13,6 +13,13 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @interface CLTabBarController : UITabBarController
+
+// iPhone Shortcuts (v2.3, URL scheme cleaner://): cleaner://clean jumps to
+// the clean page and starts a clean (with the usual confirm dialog);
+// cleaner://scan jumps to the clean page and rescans. Handled on-device;
+// no server is involved.
+- (void)handleShortcutURL:(NSURL *)url;
+
 @end
 
 NS_ASSUME_NONNULL_END

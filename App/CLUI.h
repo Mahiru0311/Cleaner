@@ -16,8 +16,8 @@ static inline UIBarButtonItemStyle cl_primary_button_style(void)
 dispatch_queue_t cl_io(void);
 void cl_alert(UIViewController *host, NSString *title, NSString *_Nullable message);
 NSString *cl_size_text(unsigned long long size);
-UIView *cl_device_header(CGFloat width);
-// "iPhone 17 Pro Max (iPhone18,2) · iOS 27.0.1 (24A446)"
+// Device line for the Log page header only (v2.3: no model-id strip under
+// any search field or in any list).
 NSString *cl_device_line(void);
 UIImage *_Nullable cl_app_icon(NSString *_Nullable bundleID);
 

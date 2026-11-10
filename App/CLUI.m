@@ -11,7 +11,10 @@
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 
-// "iPhone 17 Pro Max (iPhone18,2)\niOS 27.0.1 (24A446)"
+// The device line ("iPhone 17 Pro Max (iPhone18,2) · iOS 27.0 (24A...)"),
+// for the Log page header only. It must NOT appear under a search field or
+// in a list: the user said the model-id strip below the search is noise
+// (v2.3) — the Cleaner and Apps pages no longer use cl_device_header.
 NSString *cl_device_line(void)
 {
     struct utsname u;
@@ -32,22 +35,9 @@ NSString *cl_device_line(void)
                     : [NSString stringWithFormat:@"%@ · iOS %@", model, ver];
 }
 
-// A small centered label with the device/iOS line, for a table header.
-UIView *cl_device_header(CGFloat width)
-{
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 50)];
-    UILabel *header = [UILabel new];
-    header.numberOfLines = 0;
-    header.textAlignment = NSTextAlignmentCenter;
-    header.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
-    header.textColor = UIColor.secondaryLabelColor;
-    header.backgroundColor = UIColor.secondarySystemBackgroundColor;
-    header.text = cl_device_line();
-    header.frame = CGRectMake(0, 0, width, 34);
-    header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [box addSubview:header];  // 16 pt of clear space below the strip
-    return box;
-}
+// (v2.3: the device header strip under the search fields is deleted —
+// the user said the model-id line is noise there. cl_device_line stays
+// for the Log page header only.)
 
 // Private: app icon by bundle id (in UIKit; guarded with respondsToSelector).
 @interface UIImage (CLPrivate)
@@ -197,100 +187,47 @@ static UIImage *cl_round_icon(UIImage *raw)
     return out;
 }
 
-// Symbol tile for system services and extensions that have no icon at all,
-// picked from keywords in the bundle id.
-static UIImage *cl_service_tile(NSString *bundleID)
+// Neutral first-letter tile for apps and extensions that have no real
+// icon at all (v2.3, monochrome restyle). The v2.2 fallback was a coloured
+// symbol block picked from keywords in the bundle id (orange face, blue
+// grid, pink music note…) — the user rightly called it ugly, and it broke
+// the standing rule (SF Symbols only, black glyphs, one blue accent, no
+// colourful icons). Now: the app name's first character, black, on the
+// warm cream #F5F1E8 of the app mark, masked with the same continuous
+// squircle as real icons — one curve everywhere, no colour anywhere.
+static UIImage *cl_letter_tile(NSString *bundleID)
 {
-    static NSArray<NSArray *> *rules;
     static NSCache *tiles;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        tiles = [NSCache new];
-        UIColor *blue = UIColor.systemBlueColor, *green = UIColor.systemGreenColor, *red = UIColor.systemRedColor,
-                *orange = UIColor.systemOrangeColor, *purple = UIColor.systemPurpleColor, *indigo = UIColor.systemIndigoColor,
-                *teal = UIColor.systemTealColor, *pink = UIColor.systemPinkColor, *gray = UIColor.systemGrayColor;
-        // keywords (lower case, any match), symbol, colour
-        rules = @[
-            @[@[@"emoji"], @"face.smiling.inverse", orange],
-            @[@[@"keyboard", @"inputui", @"textinput", @"dictation"], @"keyboard.fill", gray],
-            @[@[@"airdrop", @"sharing", @"sharesheet"], @"antenna.radiowaves.left.and.right", blue],
-            @[@[@"widget", @"chrono"], @"square.grid.2x2.fill", blue],
-            @[@[@"screenshot", @"screencapture", @"screenrecord"], @"camera.viewfinder", indigo],
-            @[@[@"poster", @"wallpaper"], @"photo.on.rectangle.angled", purple],
-            @[@[@"siri", @"assistant"], @"waveform", indigo],
-            @[@[@"camera"], @"camera.fill", gray],
-            @[@[@"photo"], @"photo.fill", orange],
-            @[@[@"music", @"audio", @"shazam", @"musicrecognition"], @"music.note", pink],
-            @[@[@"headphone", @"airpods", @"bluetooth"], @"headphones", gray],
-            @[@[@"hearing"], @"ear.fill", blue],
-            @[@[@"weather"], @"cloud.sun.fill", teal],
-            @[@[@"location", @"maps", @"navigation"], @"location.fill", blue],
-            @[@[@"health", @"fitness", @"workout"], @"heart.fill", red],
-            @[@[@"pay", @"wallet", @"passbook", @"cash", @"finance"], @"creditcard.fill", green],
-            @[@[@"mail"], @"envelope.fill", blue],
-            @[@[@"message", @"sms", @"imessage"], @"message.fill", green],
-            @[@[@"facetime", @"video"], @"video.fill", green],
-            @[@[@"phone", @"call", @"telephony"], @"phone.fill", green],
-            @[@[@"notification", @"usernotification", @"bulletin"], @"bell.fill", red],
-            @[@[@"shortcut", @"workflow", @"intent"], @"square.on.square", indigo],
-            @[@[@"safari", @"web"], @"safari.fill", blue],
-            @[@[@"news", @"stocks"], @"newspaper.fill", red],
-            @[@[@"calendar", @"event"], @"calendar", red],
-            @[@[@"note", @"paper"], @"note.text", orange],
-            @[@[@"reminder"], @"checklist", blue],
-            @[@[@"game"], @"gamecontroller.fill", purple],
-            @[@[@"auth", @"account", @"appsso", @"password", @"keychain", @"tcc", @"privacy"], @"lock.fill", gray],
-            @[@[@"print"], @"printer.fill", gray],
-            @[@[@"clarity", @"accessib"], @"accessibility", blue],
-            @[@[@"home"], @"house.fill", orange],
-            @[@[@"findmy", @"fmd", @"fmip"], @"location.circle.fill", green],
-            @[@[@"carplay", @"carradio", @"cartrip", @"car."], @"car.fill", gray],
-            @[@[@"tvremote", @"tvsetup", @"com.apple.tv"], @"tv.fill", gray],
-            @[@[@"book"], @"book.fill", orange],
-            @[@[@"podcast"], @"mic.fill", purple],
-            @[@[@"spotlight", @"search"], @"magnifyingglass", gray],
-            @[@[@"diagnostic", @"logging", @"crash", @"analytics"], @"stethoscope", gray],
-            @[@[@"font"], @"textformat", gray],
-            @[@[@"translate"], @"character.bubble.fill", blue],
-            @[@[@"file", @"document", @"cloud"], @"folder.fill", blue],
-            @[@[@"setup", @"buddy", @"onboarding"], @"gearshape.2.fill", gray],
-        ];
-    });
-    NSString *key = bundleID.lowercaseString;
-    NSString *symbol = @"gearshape.fill";
-    UIColor *color = UIColor.systemGrayColor;
-    for (NSArray *rule in rules) {
-        BOOL hit = NO;
-        for (NSString *word in rule[0]) if ([key containsString:word]) { hit = YES; break; }
-        if (hit) { symbol = rule[1]; color = rule[2]; break; }
-    }
-    NSString *cacheKey = [symbol stringByAppendingString:color.description];
-    UIImage *tile = [tiles objectForKey:cacheKey];
+    dispatch_once(&once, ^{ tiles = [NSCache new]; });
+    NSString *name = cl_display_name(bundleID);
+    if (!name.length) name = bundleID.lastPathComponent;
+    if (!name.length) name = @"?";
+    NSString *letter = [name substringToIndex:1];
+    UIImage *tile = [tiles objectForKey:letter];
     if (tile) return tile;
-    // Draw the tile square and unrounded, then mask it with the same
-    // continuous squircle as real icons (cl_round_icon) — one curve
-    // everywhere, instead of the old plain rounded rect here.
     CGFloat s = 60;
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.scale = cl_device_scale();
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(s, s) format:format];
-    UIColor *fill = [color resolvedColorWithTraitCollection:[UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleLight]];
+    UIColor *cream = [UIColor colorWithRed:0xF5 / 255.0 green:0xF1 / 255.0 blue:0xE8 / 255.0 alpha:1];
     UIImage *square = [r imageWithActions:^(UIGraphicsImageRendererContext *__unused ctx) {
-        [fill setFill];
+        [cream setFill];
         UIRectFill(CGRectMake(0, 0, s, s));
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:28 weight:UIImageSymbolWeightSemibold];
-        UIImage *g = [[UIImage systemImageNamed:symbol withConfiguration:cfg] ?: [UIImage systemImageNamed:@"gearshape.fill" withConfiguration:cfg]
-                      imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
-        [g drawInRect:CGRectMake((s - g.size.width) / 2, (s - g.size.height) / 2, g.size.width, g.size.height)];
+        NSDictionary *attrs = @{ NSFontAttributeName: [UIFont systemFontOfSize:28 weight:UIFontWeightBold],
+                                 NSForegroundColorAttributeName: UIColor.labelColor };
+        CGSize ls = [letter sizeWithAttributes:attrs];
+        [letter drawAtPoint:CGPointMake((s - ls.width) / 2, (s - ls.height) / 2) withAttributes:attrs];
     }];
     tile = cl_round_icon(square);
-    [tiles setObject:tile forKey:cacheKey];
+    [tiles setObject:tile forKey:letter];
     return tile;
 }
 
 // Rounded app icon for a bundle id, cached. Falls back to the closest parent
 // app's icon (extensions: com.foo.app.widget -> com.foo.app), then to a
-// neutral service tile. Nil only without a bundle id.
+// neutral first-letter tile (v2.3: no coloured symbol blocks). Nil only
+// without a bundle id.
 UIImage *cl_app_icon(NSString *bundleID)
 {
     if (!bundleID.length) return nil;
@@ -310,7 +247,7 @@ UIImage *cl_app_icon(NSString *bundleID)
         NSString *parent = [[parts subarrayWithRange:NSMakeRange(0, (NSUInteger)n)] componentsJoinedByString:@"."];
         raw = cl_real_icon(parent) ?: (background ? cl_bundle_icon(parent) : nil);
     }
-    UIImage *icon = raw ? cl_round_icon(raw) : cl_service_tile(bundleID);
+    UIImage *icon = raw ? cl_round_icon(raw) : cl_letter_tile(bundleID);
     if (raw || background) [cache setObject:icon forKey:bundleID];
     return icon;
 }

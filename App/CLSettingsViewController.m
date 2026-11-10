@@ -23,7 +23,7 @@
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.1";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.3";
     NSString *build = NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"1";
     self.sections = @[
         @[
@@ -33,11 +33,17 @@
             @{@"title": @"沙盒技术", @"value": @"worse_query"},
         ],
         @[
+            @{@"title": @"添加到快捷指令", @"action": @"shortcuts-guide"},
+            @{@"title": @"复制 cleaner://clean", @"action": @"copy-clean"},
+            @{@"title": @"复制 cleaner://scan", @"action": @"copy-scan"},
+        ],
+        @[
             @{@"title": @"沙盒 worse_query", @"value": @"Taj C (forcequit)"},
             @{@"title": @"容器枚举 fsgetpath", @"value": @"KAMUI (murk-sus)"},
             @{@"title": @"缓存清理界面", @"value": @"WQFiles (kolbicz)"},
             @{@"title": @"首页界面", @"value": @"KernelSU Manager (tiann)"},
             @{@"title": @"图标风格", @"value": @"huamidev/GestaltX"},
+            @{@"title": @"fd 遍历与清理记账", @"value": @"YangJiiii/3105"},
         ],
         @[
             @{@"title": @"日志", @"action": @"log"},
@@ -91,12 +97,16 @@
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-    return section == 0 ? @"关于" : section == 1 ? @"来源与协议" : nil;
+    if (section == 0) return @"关于";
+    if (section == 1) return @"快捷指令";
+    if (section == 2) return @"来源与协议";
+    return nil;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    if (section == 1) return @"图标风格参考 huamidev/GestaltX（GPL-3.0）。Cleaner 是 GPL-3.0-or-later 开源软件。";
+    if (section == 1) return @"无需服务器：快捷指令直接打开 Cleaner 的链接，全部在本机完成。cleaner://clean 会先显示清理确认框，确认后才清理。";
+    if (section == 2) return @"图标风格参考 huamidev/GestaltX（GPL-3.0）；fd 遍历与清理记账参考 YangJiiii/3105（GPL-3.0）。Cleaner 是 GPL-3.0-or-later 开源软件。";
     return nil;
 }
 
@@ -119,8 +129,25 @@
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     NSDictionary *row = self.sections[indexPath.section][indexPath.row];
-    if ([row[@"action"] isEqualToString:@"log"]) {
+    NSString *action = row[@"action"];
+    if ([action isEqualToString:@"log"]) {
         [self.navigationController pushViewController:[CLLogViewController new] animated:YES];
+        return;
+    }
+    if ([action isEqualToString:@"shortcuts-guide"]) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"添加到快捷指令"
+            message:@"1. 打开「快捷指令」，点右上角 + 新建快捷指令。\n2. 添加操作「打开 URL」，填 cleaner://clean（清理）或 cleaner://scan（重新扫描）。\n3. 点完成，就可以在主屏幕、锁屏或用 Siri 直接调用清理。不需要服务器，全部在本机完成。"
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+    if ([action isEqualToString:@"copy-clean"] || [action isEqualToString:@"copy-scan"]) {
+        UIPasteboard.generalPasteboard.string = [action isEqualToString:@"copy-clean"] ? @"cleaner://clean" : @"cleaner://scan";
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"已复制"
+            message:UIPasteboard.generalPasteboard.string preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
     }
 }
 

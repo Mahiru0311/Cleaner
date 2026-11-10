@@ -73,8 +73,13 @@ require(cleaner, "只选大缓存", "large-cache-only selection")
 require(cleaner, "清理（%@）", "clean button shows selected size")
 
 # --- Home: KernelSU v3.2.5 Miuix 1:1 (copy changed). ---
+# v2.3 (user, 2026-11-10 19:28): the final direction is the 1:1 KSU home —
+# the 19:17 full-width rectangle and the 19:20 white-card variants were
+# both rejected. Green card #DFFAE4, hollow CheckCircleOutline badge
+# #36D167, 110pt, overflowing the card's bottom-right corner (+27/+31).
 require(home, "0xDFFAE4", "green status card #DFFAE4")
-require(home, "0x36 / 255.0 green:0xD1 / 255.0 blue:0x67", "check circle #36D167")
+require(home, "0x36 / 255.0 green:0xD1 / 255.0 blue:0x67", "check badge #36D167")
+require(home, "CheckCircleOutline", "hollow outline check badge (KSU icon)")
 require(home, "@\"已授权\"", "authorised status title")
 require(home, "@\"受限\"", "restricted status title")
 require(home, "@\"未授权\"", "unauthorised status title")
@@ -85,6 +90,8 @@ require(home, "去清理", "status card explains before jumping when blocked")
 require(home, "@\"应用\"", "apps mini card")
 require(home, "@\"可清理\"", "reclaimable mini card")
 forbid(home, "setTitle:@\"去清理\"", "separate go-to-clean button (status card is the entry)")
+forbid(home, "appGroupPill", "the 19:20 white-card pill is gone in the 1:1 KSU home")
+forbid(home, "status.backgroundColor = UIColor.systemBackgroundColor", "white status card (19:20 variant, rejected)")
 require(home, "tag.fill", "version row icon")
 require(home, "checkmark.shield.fill", "support-range row icon")
 # --- Home layout fixes (v2.1, from the real-device screenshot). ---
@@ -94,26 +101,31 @@ require(home, "systemFontOfSize:15 weight:UIFontWeightMedium", "mode line 15pt")
 require(home, "numberOfLines = 2", "mode line at most 2 lines")
 require(home, "constant:-20", "content bottom padding 20")
 forbid(home, "constant:-110", "old -110 padding for the deleted floating bar")
-# --- Home layout fixes (v2.2, from the v2.1 real-device screenshot). ---
-# The power button did nothing: deleted, rescan is pull-to-refresh now.
-# The check circle no longer overflows the card at all: KSU's (27, 31)
-# overflow cannot work here — the gap to the right column is 13pt, so any
-# rightward overflow of 13pt+ intersects the white card, which is drawn on
-# top (the v2.1 screenshot showed the circle's right half hidden under it).
-# v2.2 anchors the 88pt circle fully inside the card, 12pt from the right
-# and bottom edges; the gap below the status row is the standard 13pt.
+# --- Home layout (v2.2): the power button did nothing: deleted, rescan is
+# pull-to-refresh now. ---
 forbid(home, "powerTapped", "deleted power button action")
 forbid(home, 'systemImageNamed:@"power"', "deleted power button icon")
-forbid(home, "constant:27", "KSU check-circle overflow right (collides with white card)")
-forbid(home, "constant:31", "KSU check-circle overflow down (collides with info card)")
-forbid(home, "setCustomSpacing:44 afterView:statusRow", "v2.1 44pt gap for the overflowing circle")
-forbid(home, "constraintGreaterThanOrEqualToConstant:200", "v2.1 green card min height 200")
 require(home, "userRefresh", "pull-to-refresh rescan")
 require(home, "scroll.refreshControl = refresh;", "home refresh control")
-require(home, "constraintEqualToConstant:88", "88pt check circle")
 require(home, "constant:-32", "content width for 16pt side margins")
-require(home, "setCustomSpacing:13 afterView:statusRow", "13pt gap after status row")
 require(home, "constraintGreaterThanOrEqualToConstant:212", "green card min height 212")
+# --- Home layout (v2.3): the 110pt badge overflows again (+27/+31), and it
+# only clears the white cards because the green card is taller than the
+# right column (height = right column + 90) AND the row is top-aligned
+# (UIStackViewAlignmentTop, like KSU's Row default). v2.1/v2.2 used
+# alignment Fill, which stretched the right column to the card's height —
+# the badge then overlapped the white card by 79pt vertically and 14pt
+# horizontally, and the card (drawn on top) covered its right half.
+require(home, "checkBadgeView.widthAnchor constraintEqualToConstant:110", "110pt check badge")
+require(home, "checkBadgeView.trailingAnchor constraintEqualToAnchor:status.trailingAnchor constant:27",
+        "badge overflows 27pt right")
+require(home, "checkBadgeView.bottomAnchor constraintEqualToAnchor:status.bottomAnchor constant:31",
+        "badge overflows 31pt down")
+require(home, "statusRow.alignment = UIStackViewAlignmentTop", "right column top-aligned, not stretched")
+require(home, "constraintEqualToAnchor:rightColumn.heightAnchor constant:90",
+        "green card 90pt taller than the right column")
+require(home, "setCustomSpacing:44 afterView:statusRow", "44pt gap clears the downward overflow")
+require(home, "bringSubviewToFront:self.checkBadgeView", "badge drawn above the row")
 
 
 def _const(source, pattern, label):
@@ -123,27 +135,30 @@ def _const(source, pattern, label):
     return float(m.group(1))
 
 
-# Layout math, not just strings: the check circle frame must be strictly
-# inside the green card and must not intersect either right-column card, for
-# any row width. Parsed from the constraints, so a future edit that moves
-# the circle back outside fails this check instead of shipping.
+# Layout math, not just strings: the 110pt badge frame must not intersect
+# either right-column white card or the info card below, for any row width.
+# Parsed from the constraints, so a future edit that moves the badge (or
+# changes the row alignment back to Fill, which stretches the right column
+# to the card's height) fails this check instead of shipping.
+# Geometry: the badge spans [greenBottom - (110 - 31), greenBottom + 31]
+# vertically; the right column ends at greenBottom - 90 (top-aligned, so it
+# is NOT stretched). Clearance above the white cards = 90 - (110 - 31).
+# Clearance above the info card = 44 - 31.
 _green_fraction = _const(home, r"multiplier:([0-9.]+)", "green card width fraction")
 _row_gap = _const(home, r"statusRow\.spacing = ([0-9.]+)", "status row gap")
-_circle = _const(home, r"statusIconView\.widthAnchor constraintEqualToConstant:([0-9.]+)", "check circle size")
-_inset_right = -_const(home, r"statusIconView\.trailingAnchor constraintEqualToAnchor:status\.trailingAnchor constant:(-?[0-9.]+)", "check circle right inset")
-_inset_bottom = -_const(home, r"statusIconView\.bottomAnchor constraintEqualToAnchor:status\.bottomAnchor constant:(-?[0-9.]+)", "check circle bottom inset")
-_min_height = _const(home, r"constraintGreaterThanOrEqualToConstant:([0-9.]+)", "green card min height")
-if _inset_right < 0 or _inset_bottom < 0:
-    raise AssertionError("check circle overflows the green card instead of sitting inside it")
-for _width in (300, 400, 500):
-    _green_right = _width * _green_fraction
-    _white_left = _green_right + _row_gap
-    _circle_right = _green_right - _inset_right
-    if not _circle_right < _white_left:
-        raise AssertionError(f"check circle intersects the right column at row width {_width}")
-    _circle_top = _min_height - _inset_bottom - _circle
-    if _circle_top < 100:
-        raise AssertionError("check circle collides with the three text lines (~97pt)")
+_badge = _const(home, r"checkBadgeView\.widthAnchor constraintEqualToConstant:([0-9.]+)", "check badge size")
+_overflow_right = _const(home, r"checkBadgeView\.trailingAnchor constraintEqualToAnchor:status\.trailingAnchor constant:(-?[0-9.]+)", "badge right overflow")
+_overflow_down = _const(home, r"checkBadgeView\.bottomAnchor constraintEqualToAnchor:status\.bottomAnchor constant:(-?[0-9.]+)", "badge down overflow")
+_extra_height = _const(home, r"constraintEqualToAnchor:rightColumn\.heightAnchor constant:([0-9.]+)", "green card extra height")
+_gap_below = _const(home, r"setCustomSpacing:([0-9.]+) afterView:statusRow", "gap below the status row")
+if _badge != 110 or _overflow_right != 27 or _overflow_down != 31:
+    raise AssertionError(f"badge geometry is not KSU's 110pt / +27 / +31: {_badge} / {_overflow_right} / {_overflow_down}")
+if _extra_height - (_badge - _overflow_down) <= 0:
+    raise AssertionError("badge intersects the white cards: green card must be taller than the right column by more than badge - down-overflow")
+if _gap_below - _overflow_down < 13:
+    raise AssertionError("badge intersects the info card: the gap below the status row must clear the down-overflow with room to spare")
+if _row_gap != 13:
+    raise AssertionError(f"status row gap is {_row_gap}, expected 13")
 
 # --- Native tab bar (v2.1): standard UITabBarController, iOS 26 Liquid
 # Glass — the v2.0 custom floating solid-white capsule bar is gone. ---
@@ -164,30 +179,66 @@ forbid(tabbar, "imageEdgeInsets", "deprecated button edge insets")
 forbid(tabbar, "titleEdgeInsets", "deprecated button edge insets")
 
 # --- Settings: attribution + log without share. ---
-for name in ("worse_query", "KAMUI", "WQFiles", "KernelSU", "GestaltX"):
+for name in ("worse_query", "KAMUI", "WQFiles", "KernelSU", "GestaltX", "3105"):
     require(settings, name, f"settings attribution {name}")
 require(settings, "图标风格参考 huamidev/GestaltX（GPL-3.0）", "icon-language credit line")
 forbid(log_view, "UIActivityViewController", "log share button")
 
 # --- Icons (v2.2, Filza-style): real icon at native resolution, iOS
 # continuous squircle, no stretch, no plain rounded rect anywhere. ---
+# v2.3 monochrome: the fallback is a neutral first-letter tile (black on
+# cream #F5F1E8), never a coloured symbol block.
 ui = read(APP / "CLUI.m")
 require(ui, "cornerCurve = kCACornerCurveContinuous", "continuous squircle curve")
 require(ui, "0.2237", "squircle radius 22.37% of the side")
 require(ui, "contentsScale = scale", "layer renders at device scale, not 1x")
 require(ui, "cl_device_scale", "cached device scale for background icon loads")
 require(ui, "static const int formats[] = {2, 3, 1, 0, 4};", "icon formats tried largest-first")
+require(ui, "cl_letter_tile", "neutral first-letter fallback tile")
+require(ui, "0xF5 / 255.0", "cream #F5F1E8 tile background")
 forbid(ui, "bezierPathWithRoundedRect", "plain rounded rect (not a squircle)")
+forbid(ui, "cl_service_tile", "coloured keyword symbol tiles (v2.2, user: ugly)")
+
+# --- No model-ID strings in list/search UI (v2.3). The device line stays
+# for the Log page header only; the home info card shows the marketing name
+# only, with the correct iPhone18,x mapping (verified 2026-11-10: 18,1 =
+# 17 Pro, 18,2 = 17 Pro Max, 18,3 = 17, 18,4 = Air — v2.2 had them swapped).
+forbid(cleaner, "cl_device_header", "device strip under the cleaner search field")
+apps_source = read(APP / "CLAppsViewController.m")
+forbid(apps_source, "cl_device_header", "device strip under the apps search field")
+require(log_view, "cl_device_line", "device line kept for the log header")
+require(home, '"iPhone18,2": @"iPhone 17 Pro Max"', "correct 18,2 mapping")
+require(home, '"iPhone18,3": @"iPhone 17"', "correct 18,3 mapping")
+forbid(home, '"iPhone18,1": @"iPhone 17"', "swapped 18,1 mapping (v2.2)")
+
+# --- App count after cleaning (v2.3 bug): the home count is the total
+# containers measured, not the rows left after dropping sub-64 KB apps.
+require(cache, "totalAppCount", "store keeps the total measured containers")
+require(cache, "totalApps:(NSUInteger)totalApps", "scanner reports the measured container count")
+require(cache, "ctx.totalContainers++", "every measured container is counted")
+require(home, "store.totalAppCount", "home shows the measured total, not the row count")
+require(cleaner, "totalApps:totalApps", "cleaner passes the total through")
 
 # --- Scan speed (v2.2): 4 parallel workers, incremental batches, persistent
-# measurement cache, one ancestry walk per container, cheap open() probe. ---
+# measurement cache, one ancestry walk per container. ---
+# v2.3: the NSFileManager enumerator is replaced by an fd walk (3105-style:
+# fstatat AT_SYMLINK_NOFOLLOW, fdopendir, openat O_NOFOLLOW) that never
+# resolves a path through a symlink, and the Caches tree also returns its
+# top-5 subdirectory sizes.
 require(cache, "dispatch_apply(4,", "bounded 4-worker measurement")
 require(cache, "itemsUpdate", "incremental batch delivery")
 require(cache, "cl-cache-measure.plist", "persistent measurement cache")
 require(cache, "cl_measure_cache_lookup", "measurement cache lookup")
 require(cache, "cl_measure_cache_store", "measurement cache store")
 require(cache, "CLSafetyContainerTargetsSafe", "combined container+targets safety check")
-require(cache, "O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_CLOEXEC", "cheap open() access probe")
+require(cache, "cl_measure_fd", "fd-based tree walk")
+require(cache, "fdopendir", "fd-relative listing")
+require(cache, "AT_SYMLINK_NOFOLLOW", "no-follow stat in the walk")
+require(cache, "cl_measure_tree_subdirs", "subdir breakdown measurement")
+require(cache, "cacheSubdirs", "Caches top-5 subdirectory breakdown")
+require(cache, "cl_purge_folder_contents", "per-folder purge helper")
+require(cache, "cl_clean_matching_files", "extension/name match cleaner")
+forbid(cache, "enumeratorAtURL", "NSFileManager path enumerator replaced by the fd walk")
 forbid(cache, "[NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]",
        "full readdir pass as an access probe")
 require(read(CORE / "CLSafety.h"), "CLSafetyContainerTargetsSafe", "combined safety helper declared")
@@ -219,6 +270,64 @@ require(directory, "清空数据", "clear action in the directory view")
 require(directory, "initWithApp:", "drill-down into subfolders")
 require(directory, "path:entry.path", "drill-down pushes the tapped subfolder")
 forbid(directory, "UIActivityViewController", "no sharing from the directory browser")
+# --- Directory view (v2.3): swipe a folder to empty it; Caches
+# subdirectories show their scanned size. ---
+require(directory, "cl_purge_folder_contents", "per-folder clean")
+require(directory, "trailingSwipeActionsConfigurationForRowAtIndexPath", "swipe-to-clean action")
+require(directory, "cacheSubdirs", "Caches subdirectory sizes from the scan")
+require(directory, "左滑文件夹可清空其内容", "footer describes swipe-to-clean")
+forbid(directory, "只读浏览", "directory is no longer read-only (folders can be cleaned)")
+
+# --- Custom cleaning (v2.3): rules, presets, excludes; folder rules refuse
+# the container root and Documents/Library themselves; extension/name rules
+# only touch Library/Caches + tmp. ---
+custom = read(CORE / "CLCustomClean.m")
+custom_vc = read(APP / "CLCustomCleanViewController.m")
+require(custom, "cl_custom_clean_presets", "built-in presets")
+require(custom, "cl_custom_clean_validate_folder_pattern", "folder rule validation")
+require(custom, "cl_custom_clean_run", "rule execution")
+require(custom, "cl_purge_folder_contents", "folder rules purge contents")
+require(custom, "cl_clean_matching_files", "extension/name rules match files")
+require(custom, "视频缓存", "video cache preset")
+require(custom, "图片缓存", "image cache preset")
+require(custom, "日志文件", "log files preset")
+require(custom, "临时文件", "tmp files preset")
+require(custom_vc, "自定义清理", "custom cleaning page")
+require(custom_vc, "开始清理", "run button")
+require(custom_vc, "添加规则", "add-rule flow")
+require(custom_vc, "添加排除", "add-exclude flow")
+require(cleaner, "自定义清理…", "custom cleaning entry in the clean page menu")
+
+# --- iPhone Shortcuts (v2.3): cleaner://clean and cleaner://scan, handled
+# on-device, no server. App Intents are NOT implemented: an intent runs in
+# a separate extension process and the App Group sandbox grant lives in the
+# main app process, so a no-open clean would need a new extension target
+# and an unproven grant flow — the URL scheme is the honest scope.
+require(info, "CFBundleURLTypes", "URL scheme registered")
+require(info, "<string>cleaner</string>", "cleaner:// scheme")
+require(main, "openURLContexts", "scene handles incoming URLs")
+require(main, "handleShortcutURL", "URL dispatch to the tab bar")
+require(tabbar, "handleShortcutURL", "tab bar deep-links the clean page")
+require(tabbar, 'isEqualToString:@"cleaner"', "cleaner:// scheme check")
+require(settings, "快捷指令", "shortcuts guide in Settings")
+require(settings, "cleaner://clean", "clean URL in Settings")
+require(settings, "cleaner://scan", "scan URL in Settings")
+require(settings, "无需服务器", "no-server note in Settings")
+require(cleaner, "startShortcutAction", "cleaner page shortcut entry point")
+
+# --- Animations (v2.3, redone): scan batches insert with a fade, the
+# progress bar shows the real scan fraction, cleaning shows a per-row
+# spinner and a green check per finished row, the big total counts down
+# as cache is freed, and a spring check + haptic lands on success.
+# System animation only (UIView spring / CADisplayLink), no custom spinner.
+require(cleaner, "insertRowsAtIndexPaths", "scan batches insert with animation")
+require(cleaner, "CLCacheScanFraction", "scan progress fraction from N/M")
+require(cleaner, "cleanSpinner", "per-row cleaning spinner")
+require(cleaner, "animateTotalTo", "total counts down as cache is freed")
+require(cleaner, "CADisplayLink", "countdown display link")
+require(cleaner, "doneView", "spring success check in the summary card")
+require(cleaner, "usingSpringWithDamping", "spring animation for the success check")
+require(cleaner, "notificationOccurred", "success haptic")
 
 # --- App entry: tab container root, resolvers set, restore recovery. ---
 require(main, "CLTabBarController", "tab bar root")
@@ -226,18 +335,19 @@ require(main, "cl_set_container_label_resolver", "container label resolver")
 require(main, "cl_set_container_list_provider", "container list provider")
 require(main, "cl_recover_interrupted_restore", "interrupted restore recovery")
 
-# --- Build: only the v2 sources, iPhone only, 0.2.2. ---
+# --- Build: only the v2 sources, iPhone only, 0.2.3. ---
 for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.m",
-               "Core/CLLaunchServices.m", "App/CLUI.m", "App/CLCleanerViewController.m",
-               "App/CLAppsViewController.m", "App/CLAppActions.m",
+               "Core/CLLaunchServices.m", "Core/CLCustomClean.m", "App/CLUI.m",
+               "App/CLCleanerViewController.m", "App/CLAppsViewController.m",
+               "App/CLCustomCleanViewController.m", "App/CLAppActions.m",
                "App/CLAppDirectoryViewController.m", "App/CLHomeViewController.m",
                "App/CLSettingsViewController.m", "App/CLLogViewController.m",
                "App/CLTabBarController.m", "App/main.m"):
     require(build, source, f"build source {source}")
 forbid(build, "WQCore.m", "v0.1 build source")
 require(build, "-Os -flto -dead_strip", "size optimisation flags")
-require(info, "<string>0.2.2</string>", "version 0.2.2")
-forbid(info, "<string>0.2.1</string>", "old version 0.2.1")
+require(info, "<string>0.2.3</string>", "version 0.2.3")
+forbid(info, "<string>0.2.2</string>", "old version 0.2.2")
 forbid(info, "CFBundleIcons~ipad", "iPad icon set")
 forbid(info, "UISupportedInterfaceOrientations~ipad", "iPad orientations")
 

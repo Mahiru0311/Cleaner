@@ -49,4 +49,20 @@
     self.viewControllers = @[homeNav, cleanNav, appsNav, settingsNav];
 }
 
+// cleaner://clean and cleaner://scan (v2.3). The URL's host is the action;
+// anything else is ignored. Selecting the tab first makes the cleaner
+// page's view (and its scan) exist before the action runs.
+- (void)handleShortcutURL:(NSURL *)url
+{
+    if (![[url.scheme lowercaseString] isEqualToString:@"cleaner"]) return;
+    NSString *action = url.host.lowercaseString;
+    if (![action isEqualToString:@"clean"] && ![action isEqualToString:@"scan"]) return;
+    UINavigationController *cleanNav = (UINavigationController *)self.viewControllers[1];
+    if (![cleanNav isKindOfClass:UINavigationController.class]) return;
+    CLCleanerViewController *cleaner = (CLCleanerViewController *)cleanNav.viewControllers.firstObject;
+    if (![cleaner isKindOfClass:CLCleanerViewController.class]) return;
+    self.selectedIndex = 1;
+    [cleaner startShortcutAction:action];
+}
+
 @end

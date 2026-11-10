@@ -39,7 +39,8 @@
     self.navigationItem.searchController = search;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
-    self.tableView.tableHeaderView = cl_device_header(self.view.bounds.size.width);
+    // v2.3: no device/model-id strip under the search field (user: the
+    // iPhone17 (iPhone18,3) line is noise). The search bar is the header.
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
     [self scan];

@@ -27,6 +27,24 @@
     // Recover an interrupted restore from a previous launch, if any.
     NSString *recovery = cl_recover_interrupted_restore();
     if (recovery.length) cl_log(@"%@", recovery);
+
+    // Cold launch from a shortcut (cleaner://clean / cleaner://scan).
+    for (UIOpenURLContext *context in connectionOptions.URLContexts) {
+        [self handleURLContext:context];
+    }
+}
+
+// iPhone Shortcuts (v2.3): cleaner://clean and cleaner://scan are handled
+// on-device by the tab bar — no server, no network.
+- (void)scene:(UIScene *)scene openURLContexts:(NSSet<UIOpenURLContext *> *)URLContexts
+{
+    for (UIOpenURLContext *context in URLContexts) [self handleURLContext:context];
+}
+
+- (void)handleURLContext:(UIOpenURLContext *)context
+{
+    CLTabBarController *tabBar = (CLTabBarController *)self.window.rootViewController;
+    if ([tabBar isKindOfClass:CLTabBarController.class]) [tabBar handleShortcutURL:context.URL];
 }
 
 @end

@@ -93,7 +93,7 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     if (section == CLCustomSectionRules)
-        return @"文件夹规则不能指向容器根目录、Documents 或 Library 本身；清理整个应用的数据请用应用页的「清空数据」（会先备份）。";
+        return @"点一条规则可以预览它会删什么（匹配文件数 + 大小），确认后再清理。扩展名/文件名规则还能按文件年龄、大小和子目录筛选。文件夹规则不能指向容器根目录、Documents 或 Library 本身；清理整个应用的数据请用应用页的「清空数据」（会先备份）。";
     if (section == CLCustomSectionPresets) return @"点一下把预设的规则加入规则列表。";
     return @"被排除的应用和文件夹不会被任何规则清理。";
 }
@@ -198,6 +198,11 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section == CLCustomSectionRules && (NSUInteger)indexPath.row < _rules.count) {
+        // v2.4: tap a rule to preview it (dry-run), toggle it, or delete it.
+        [self ruleActionSheetForRow:(NSUInteger)indexPath.row];
+        return;
+    }
     if (indexPath.section == CLCustomSectionRules && (NSUInteger)indexPath.row == _rules.count) {
         [self addRuleSheet];
         return;
@@ -210,6 +215,133 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
         (NSUInteger)indexPath.row == _excludedApps.count + _excludedFolders.count) {
         [self addExcludeSheet];
     }
+}
+
+#pragma mark - Rule preview (v2.4 dry-run)
+
+- (void)ruleActionSheetForRow:(NSUInteger)row
+{
+    NSDictionary *rule = _rules[row];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:cl_custom_clean_rule_summary(rule)
+        message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"预览匹配" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+        [weakSelf previewRule:rule];
+    }]];
+    BOOL enabled = [rule[CLCustomRuleEnabledKey] boolValue];
+    [sheet addAction:[UIAlertAction actionWithTitle:enabled ? @"停用这条规则" : @"启用这条规则"
+                                              style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSMutableArray *rules = [strongSelf->_rules mutableCopy];
+        NSMutableDictionary *r = [rules[row] mutableCopy];
+        r[CLCustomRuleEnabledKey] = @(!enabled);
+        rules[row] = r;
+        cl_custom_clean_save_rules(rules);
+        [strongSelf reloadModel];
+        [strongSelf.tableView reloadData];
+        [strongSelf updateRunButton];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"删除这条规则" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSMutableArray *rules = [strongSelf->_rules mutableCopy];
+        [rules removeObjectAtIndex:row];
+        cl_custom_clean_save_rules(rules);
+        [strongSelf reloadModel];
+        [strongSelf.tableView reloadData];
+        [strongSelf updateRunButton];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:
+                             [NSIndexPath indexPathForRow:row inSection:CLCustomSectionRules]];
+    sheet.popoverPresentationController.sourceView = cell ?: self.view;
+    sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+// Dry-run: show what the rule would delete, then confirm before running it.
+- (void)previewRule:(NSDictionary *)rule
+{
+    NSArray<CLCacheItem *> *apps = [CLCacheStore shared].items;
+    if (!apps.count) {
+        cl_alert(self, @"没有已扫描的应用", @"请先去清理页扫描一次，再回来预览。");
+        return;
+    }
+    _statusLabel.text = @"正在预览…";
+    __weak typeof(self) weakSelf = self;
+    cl_custom_clean_dry_run(apps, rule, ^(NSString *status) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf) strongSelf->_statusLabel.text = status;
+        });
+    }, ^(NSDictionary *result) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSUInteger matched = [result[@"matched"] unsignedIntegerValue];
+            unsigned long long bytes = [result[@"bytes"] unsignedLongLongValue];
+            NSUInteger skipped = [result[@"skipped"] unsignedIntegerValue];
+            NSUInteger appsHit = [result[@"apps"] unsignedIntegerValue];
+            NSArray *sample = result[@"sample"];
+            NSString *reason = result[@"reason"];
+            if (reason.length) {
+                strongSelf->_statusLabel.text = reason;
+                cl_alert(strongSelf, @"无法预览", reason);
+                return;
+            }
+            NSMutableString *text = [NSMutableString stringWithFormat:
+                @"这条规则会删 %lu 个文件，共 %@，涉及 %lu 个应用。", (unsigned long)matched,
+                cl_size_text(bytes), (unsigned long)appsHit];
+            if (skipped) [text appendFormat:@"\n另有 %lu 个文件因太新或大小不符而跳过。", (unsigned long)skipped];
+            NSArray *shown = [sample subarrayWithRange:NSMakeRange(0, MIN(sample.count, 10))];
+            if (shown.count) [text appendFormat:@"\n\n%@", [shown componentsJoinedByString:@"\n"]];
+            if (sample.count > shown.count)
+                [text appendFormat:@"\n…等 %lu 个", (unsigned long)(sample.count - shown.count)];
+            strongSelf->_statusLabel.text = [NSString stringWithFormat:@"预览：%lu 个文件，%@。",
+                                             (unsigned long)matched, cl_size_text(bytes)];
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"预览匹配"
+                message:text preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+            if (matched) {
+                [alert addAction:[UIAlertAction actionWithTitle:@"清理这些文件"
+                                                          style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
+                    [weakSelf runOneRule:rule];
+                }]];
+            }
+            [strongSelf presentViewController:alert animated:YES completion:nil];
+        });
+    });
+}
+
+- (void)runOneRule:(NSDictionary *)rule
+{
+    NSArray<CLCacheItem *> *apps = [CLCacheStore shared].items;
+    _running = YES;
+    [self updateRunButton];
+    _statusLabel.text = @"正在清理…";
+    __weak typeof(self) weakSelf = self;
+    cl_custom_clean_run_one_rule(apps, rule, ^(NSString *status) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf) strongSelf->_statusLabel.text = status;
+        });
+    }, ^(NSDictionary *result) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf->_running = NO;
+            [strongSelf updateRunButton];
+            unsigned long long freed = [result[@"freed"] unsignedLongLongValue];
+            NSUInteger failed = [result[@"failed"] unsignedIntegerValue];
+            NSUInteger skipped = [result[@"skipped"] unsignedIntegerValue];
+            NSString *text = [NSString stringWithFormat:@"已释放 %@。", cl_size_text(freed)];
+            if (skipped) text = [text stringByAppendingFormat:@"跳过 %lu 个（太新/大小不符）。", (unsigned long)skipped];
+            if (failed) text = [text stringByAppendingFormat:@"%lu 项失败（详见日志）。", (unsigned long)failed];
+            strongSelf->_statusLabel.text = text;
+            cl_alert(strongSelf, @"自定义清理完成", text);
+        });
+    });
 }
 
 #pragma mark - Rules
@@ -298,7 +430,7 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
     }];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"添加" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"下一步" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
         NSString *pattern = [alert.textFields.firstObject.text stringByTrimmingCharactersInSet:
@@ -310,18 +442,82 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
                 cl_alert(strongSelf, @"不能添加", reason);
                 return;
             }
+            [strongSelf saveRule:cl_custom_clean_make_rule(bundleID, kind, pattern)];
+            return;
         }
         if ([kind isEqualToString:@"extension"] && ![pattern hasPrefix:@"."]) {
             pattern = [@"." stringByAppendingString:pattern];
         }
-        NSMutableArray *rules = [cl_custom_clean_rules() mutableCopy];
-        [rules addObject:cl_custom_clean_make_rule(bundleID, kind, pattern)];
-        cl_custom_clean_save_rules(rules);
-        [strongSelf reloadModel];
-        [strongSelf.tableView reloadData];
-        [strongSelf updateRunButton];
+        // v2.4: extension/name rules can filter by age, size and subfolder.
+        [strongSelf askFiltersForKind:kind bundleID:bundleID pattern:pattern];
     }]];
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+// v2.4: optional filters for an extension/name rule. All four fields may
+// be left empty (no filter). "跳过" adds the rule without filters.
+- (void)askFiltersForKind:(NSString *)kind bundleID:(NSString *)bundleID pattern:(NSString *)pattern
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"筛选（可选）"
+        message:@"只删符合条件的文件，留空就是不过滤。大小单位 KB。"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.placeholder = @"仅删 N 天前的文件";
+        tf.keyboardType = UIKeyboardTypeDecimalPad;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.placeholder = @"仅删大于 N KB 的文件";
+        tf.keyboardType = UIKeyboardTypeDecimalPad;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.placeholder = @"仅删小于 N KB 的文件";
+        tf.keyboardType = UIKeyboardTypeDecimalPad;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.placeholder = @"仅限子目录，如 Library/Caches/xxx";
+        tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        tf.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"跳过" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf saveRule:cl_custom_clean_make_rule(bundleID, kind, pattern)];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"添加" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSString *ageText = [alert.textFields[0].text stringByTrimmingCharactersInSet:
+                             NSCharacterSet.whitespaceCharacterSet];
+        NSString *minText = [alert.textFields[1].text stringByTrimmingCharactersInSet:
+                             NSCharacterSet.whitespaceCharacterSet];
+        NSString *maxText = [alert.textFields[2].text stringByTrimmingCharactersInSet:
+                             NSCharacterSet.whitespaceCharacterSet];
+        NSString *sub = [alert.textFields[3].text stringByTrimmingCharactersInSet:
+                         NSCharacterSet.whitespaceCharacterSet];
+        NSNumber *age = ageText.length ? @(ageText.doubleValue) : nil;
+        NSNumber *minSize = minText.length ? @(minText.doubleValue * 1024) : nil;
+        NSNumber *maxSize = maxText.length ? @(maxText.doubleValue * 1024) : nil;
+        NSDictionary *rule = cl_custom_clean_make_rule_full(bundleID, kind, pattern, age, minSize, maxSize,
+                                                            sub.length ? sub : nil);
+        NSString *reason = nil;
+        if (!cl_custom_clean_validate_rule(rule, &reason)) {
+            cl_alert(strongSelf, @"不能添加", reason);
+            return;
+        }
+        [strongSelf saveRule:rule];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)saveRule:(NSDictionary *)rule
+{
+    NSMutableArray *rules = [cl_custom_clean_rules() mutableCopy];
+    [rules addObject:rule];
+    cl_custom_clean_save_rules(rules);
+    [self reloadModel];
+    [self.tableView reloadData];
+    [self updateRunButton];
 }
 
 #pragma mark - Presets
@@ -446,8 +642,10 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
             [strongSelf updateRunButton];
             unsigned long long freed = [result[@"freed"] unsignedLongLongValue];
             NSUInteger failed = [result[@"failed"] unsignedIntegerValue];
+            NSUInteger skipped = [result[@"skipped"] unsignedIntegerValue];
             NSArray *warnings = result[@"warnings"];
             NSString *text = [NSString stringWithFormat:@"已释放 %@。", cl_size_text(freed)];
+            if (skipped) text = [text stringByAppendingFormat:@"跳过 %lu 个（太新/大小不符）。", (unsigned long)skipped];
             if (failed) text = [text stringByAppendingFormat:@"%lu 项失败（详见日志）。", (unsigned long)failed];
             if (warnings.count) text = [text stringByAppendingFormat:@"\n%@", [warnings componentsJoinedByString:@"\n"]];
             strongSelf->_statusLabel.text = text;

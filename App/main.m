@@ -9,6 +9,7 @@
 #import "CLApp.h"
 #import "CLGrant.h"
 #import "CLLaunchServices.h"
+#import "CleanerIntents-Swift.h"
 
 @interface CLSceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (nonatomic, strong) UIWindow *window;
@@ -69,6 +70,11 @@
 int main(int argc, char *argv[])
 {
     @autoreleasepool {
+        // Keep the App Intent types linked (CleanerIntents.swift): the
+        // system discovers intents by scanning the binary, and nothing
+        // else references them — without this call, -dead_strip could
+        // drop them and the shortcut would silently disappear.
+        [CLIntentsBootstrap keepAlive];
         cl_set_container_label_resolver(cl_bundle_id_for_container);
         cl_set_container_list_provider(cl_ls_container_paths);
         return UIApplicationMain(argc, argv, nil, NSStringFromClass(CLAppDelegate.class));

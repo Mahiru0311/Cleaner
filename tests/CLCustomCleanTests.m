@@ -114,6 +114,178 @@ int main(void)
             check([subdirs[1][@"name"] isEqualToString:@"beta"] && [subdirs[1][@"bytes"] unsignedLongLongValue] == 3,
                   @"second subdirectory with its size");
 
+            // --- v2.4 rule validation: age/size/subfolder sanity. ---
+            NSString *vreason = nil;
+            NSDictionary *vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", @30, nil, nil, nil);
+            check(cl_custom_clean_validate_rule(vrule, &vreason), @"age filter rule valid");
+            vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", @4000, nil, nil, nil);
+            check(!cl_custom_clean_validate_rule(vrule, &vreason), @"age over 3650 days refused");
+            vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, @1000, @100, nil);
+            check(!cl_custom_clean_validate_rule(vrule, &vreason), @"min size above max size refused");
+            vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, @100, @1000, nil);
+            check(cl_custom_clean_validate_rule(vrule, &vreason), @"min below max size valid");
+            vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, @"Documents");
+            check(!cl_custom_clean_validate_rule(vrule, &vreason), @"subfolder outside Caches/tmp refused");
+            vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, @"Library/Caches/sub");
+            check(cl_custom_clean_validate_rule(vrule, &vreason), @"subfolder under Caches allowed");
+            vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, @"com.foo");
+            check(cl_custom_clean_validate_rule(vrule, &vreason), @"bare subfolder name allowed (means under Caches)");
+            vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, @"Library/../Caches");
+            check(!cl_custom_clean_validate_rule(vrule, &vreason), @"subfolder with dot-dot refused");
+            vrule = cl_custom_clean_make_rule_full(@"*", @"folder", @"Library/Caches/x", @30, nil, nil, nil);
+            check(!cl_custom_clean_validate_rule(vrule, &vreason), @"folder rule with age filter refused");
+            vrule = cl_custom_clean_make_rule_full(@"*", @"name", @"thumb", nil, nil, nil, @"tmp");
+            check(cl_custom_clean_validate_rule(vrule, &vreason), @"name rule scoped to tmp valid");
+
+            // --- v2.4 filters, dry-run math, idempotency, interrupt safety. ---
+            // A fresh container so these tests do not depend on the state
+            // the earlier blocks left behind.
+            NSString *container2 = [base stringByAppendingPathComponent:@"App-UUID-2"];
+            mkdirs([container2 stringByAppendingPathComponent:@"Library/Caches/sub"]);
+            mkdirs([container2 stringByAppendingPathComponent:@"tmp"]);
+            put([container2 stringByAppendingPathComponent:@"Library/Caches/new.mp4"], [@"" stringByPaddingToLength:100 withString:@"x" startingAtIndex:0]);
+            put([container2 stringByAppendingPathComponent:@"Library/Caches/old.mp4"], [@"" stringByPaddingToLength:200 withString:@"x" startingAtIndex:0]);
+            put([container2 stringByAppendingPathComponent:@"Library/Caches/sub/old2.mp4"], [@"" stringByPaddingToLength:300 withString:@"x" startingAtIndex:0]);
+            put([container2 stringByAppendingPathComponent:@"Library/Caches/sub/new2.mp4"], [@"" stringByPaddingToLength:400 withString:@"x" startingAtIndex:0]);
+            put([container2 stringByAppendingPathComponent:@"Library/Caches/big.log"], [@"" stringByPaddingToLength:5000 withString:@"x" startingAtIndex:0]);
+            put([container2 stringByAppendingPathComponent:@"Library/Caches/small.log"], @"0123456789");
+            put([container2 stringByAppendingPathComponent:@"tmp/temp.mp4"], [@"" stringByPaddingToLength:600 withString:@"x" startingAtIndex:0]);
+            NSDate *fortyDaysAgo = [NSDate dateWithTimeIntervalSinceNow:-40 * 86400];
+            check([fm setAttributes:@{ NSFileModificationDate: fortyDaysAgo }
+                       ofItemAtPath:[container2 stringByAppendingPathComponent:@"Library/Caches/old.mp4"] error:nil],
+                  @"set old file mtime");
+            check([fm setAttributes:@{ NSFileModificationDate: fortyDaysAgo }
+                       ofItemAtPath:[container2 stringByAppendingPathComponent:@"Library/Caches/sub/old2.mp4"] error:nil],
+                  @"set old subfolder file mtime");
+            // Age filter, dry-run first: only the two 40-day-old .mp4s
+            // match (200 + 300); the three new .mp4s are skipped, not errors.
+            CLCleanMatchOptions ageOpts = { .minAgeSeconds = 30 * 86400.0, .dryRun = YES };
+            CLCleanMatchResult ageDry;
+            check(cl_clean_matching_files_filtered(container2, @[@".mp4"], nil, nil, &ageOpts, &ageDry, NULL) &&
+                  ageDry.matched == 2 && ageDry.matchedBytes == 500 && ageDry.skipped == 3 && ageDry.failed == 0,
+                  @"age filter dry-run: 2 old files, 500 bytes, 3 skipped");
+            check(has([container2 stringByAppendingPathComponent:@"Library/Caches/old.mp4"]),
+                  @"dry-run deletes nothing");
+            ageOpts.dryRun = NO;
+            CLCleanMatchResult ageRun;
+            check(cl_clean_matching_files_filtered(container2, @[@".mp4"], nil, nil, &ageOpts, &ageRun, NULL) &&
+                  ageRun.freed == 500 && ageRun.failed == 0,
+                  @"age filter run frees exactly the dry-run bytes");
+            check(!has([container2 stringByAppendingPathComponent:@"Library/Caches/old.mp4"]),
+                  @"old file gone after the age-filtered run");
+            check(has([container2 stringByAppendingPathComponent:@"Library/Caches/new.mp4"]),
+                  @"new file kept by the age filter");
+            // Size filter: only big.log (5000) is over 1000 bytes.
+            CLCleanMatchOptions sizeOpts = { .minSize = 1000, .dryRun = YES };
+            CLCleanMatchResult sizeDry;
+            check(cl_clean_matching_files_filtered(container2, @[@".log"], nil, nil, &sizeOpts, &sizeDry, NULL) &&
+                  sizeDry.matched == 1 && sizeDry.matchedBytes == 5000 && sizeDry.skipped == 1,
+                  @"size filter dry-run: 1 big file, 5000 bytes, 1 skipped");
+            sizeOpts.dryRun = NO;
+            CLCleanMatchResult sizeRun;
+            check(cl_clean_matching_files_filtered(container2, @[@".log"], nil, nil, &sizeOpts, &sizeRun, NULL) &&
+                  sizeRun.freed == 5000 && sizeRun.failed == 0,
+                  @"size filter run frees the big log only");
+            check(has([container2 stringByAppendingPathComponent:@"Library/Caches/small.log"]),
+                  @"small log kept by the size filter");
+            // Max-size filter: only new.mp4 (100) is at most 150 bytes.
+            CLCleanMatchOptions maxOpts = { .maxSize = 150 };
+            CLCleanMatchResult maxRun;
+            check(cl_clean_matching_files_filtered(container2, @[@".mp4"], nil, nil, &maxOpts, &maxRun, NULL) &&
+                  maxRun.matched == 1 && maxRun.matchedBytes == 100 && maxRun.skipped == 2,
+                  @"max-size filter: only the 100-byte file matches");
+            // Subfolder scope: only sub/new2.mp4 (400) is under Caches/sub.
+            CLCleanMatchOptions subOpts = { .roots = @[@"Library/Caches/sub"] };
+            CLCleanMatchResult subRun;
+            check(cl_clean_matching_files_filtered(container2, @[@".mp4"], nil, nil, &subOpts, &subRun, NULL) &&
+                  subRun.matched == 1 && subRun.matchedBytes == 400 && subRun.skipped == 0,
+                  @"subfolder scope: only the subfolder file matches");
+            // A root outside Caches/tmp is refused outright.
+            CLCleanMatchOptions badOpts = { .roots = @[@"Documents"] };
+            CLCleanMatchResult badRun;
+            NSString *badReason = nil;
+            check(!cl_clean_matching_files_filtered(container2, @[@".mp4"], nil, nil, &badOpts, &badRun, &badReason),
+                  @"subfolder root outside Caches/tmp refused");
+            // Idempotent re-run: the subfolder call again frees 0, no errors.
+            CLCleanMatchResult subAgain;
+            check(cl_clean_matching_files_filtered(container2, @[@".mp4"], nil, nil, &subOpts, &subAgain, NULL) &&
+                  subAgain.freed == 0 && subAgain.failed == 0 && subAgain.matched == 0,
+                  @"idempotent re-run frees 0 with no errors");
+            // Interrupt safety: a pre-cancelled run deletes nothing, and
+            // the next full run still works.
+            CLScanCancellation *preCancelled = [CLScanCancellation new];
+            [preCancelled cancel];
+            CLCleanMatchOptions cancelOpts = { .cancellation = preCancelled };
+            CLCleanMatchResult cancelRun;
+            check(cl_clean_matching_files_filtered(container2, @[@".mp4"], nil, nil, &cancelOpts, &cancelRun, NULL) &&
+                  cancelRun.freed == 0 && cancelRun.failed == 0,
+                  @"pre-cancelled run deletes nothing");
+            check(has([container2 stringByAppendingPathComponent:@"tmp/temp.mp4"]),
+                  @"cancelled run leaves the files in place");
+            CLCleanMatchResult fullRun;
+            check(cl_clean_matching_files_filtered(container2, @[@".mp4"], nil, nil, NULL, &fullRun, NULL) &&
+                  fullRun.freed == 600 && fullRun.failed == 0,
+                  @"the run after a cancelled one still frees the remainder");
+            // Mid-run cancel: 2000 files, cancel after 5 ms from another
+            // thread. Either the first run finishes (freed1 == total) or
+            // it is interrupted — either way the two runs together free
+            // exactly the total, with no errors on the second run.
+            NSString *bulk = [container2 stringByAppendingPathComponent:@"Library/Caches/bulk"];
+            mkdirs(bulk);
+            for (int i = 0; i < 2000; i++) {
+                put([bulk stringByAppendingPathComponent:[NSString stringWithFormat:@"f%04d.mp4", i]], @"0123456789");
+            }
+            CLScanCancellation *midCancel = [CLScanCancellation new];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_MSEC)),
+                           dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ [midCancel cancel]; });
+            CLCleanMatchOptions midOpts = { .cancellation = midCancel };
+            CLCleanMatchResult mid1, mid2;
+            cl_clean_matching_files_filtered(container2, @[@".mp4"], nil, nil, &midOpts, &mid1, NULL);
+            cl_clean_matching_files_filtered(container2, @[@".mp4"], nil, nil, NULL, &mid2, NULL);
+            check(mid1.failed == 0 && mid2.failed == 0 && mid1.freed + mid2.freed == 20000,
+                  @"mid-run cancel + re-run frees exactly the total, no errors");
+            check([fm contentsOfDirectoryAtPath:bulk error:nil].count == 0,
+                  @"no bulk files remain after the re-run");
+
+            // --- Dry-run preview + single-rule run, through the real API. ---
+            // The rule is passed in directly (no rules-plist writes).
+            NSString *container3 = [base stringByAppendingPathComponent:@"App-UUID-3"];
+            mkdirs([container3 stringByAppendingPathComponent:@"Library/Caches"]);
+            put([container3 stringByAppendingPathComponent:@"Library/Caches/a.mp4"], @"12345");
+            put([container3 stringByAppendingPathComponent:@"Library/Caches/b.mp4"], @"1234567");
+            CLCacheItem *item3 = [CLCacheItem new];
+            item3.bundleID = @"com.example.three"; item3.name = @"Test3"; item3.containerPath = container3;
+            NSDictionary *rule3 = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, nil);
+            dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+            __block NSDictionary *dry = nil;
+            cl_custom_clean_dry_run(@[item3], rule3, nil, ^(NSDictionary *result) {
+                dry = result; dispatch_semaphore_signal(sem);
+            });
+            dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            check([dry[@"matched"] unsignedIntegerValue] == 2 &&
+                  [dry[@"bytes"] unsignedLongLongValue] == 12,
+                  @"dry-run preview math: 2 files, 12 bytes");
+            check(has([container3 stringByAppendingPathComponent:@"Library/Caches/a.mp4"]),
+                  @"dry-run preview deletes nothing");
+            __block NSDictionary *one = nil;
+            cl_custom_clean_run_one_rule(@[item3], rule3, nil, ^(NSDictionary *result) {
+                one = result; dispatch_semaphore_signal(sem);
+            });
+            dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            check([one[@"freed"] unsignedLongLongValue] == 12 &&
+                  [one[@"failed"] unsignedIntegerValue] == 0,
+                  @"single-rule run frees exactly the dry-run bytes");
+            check(!has([container3 stringByAppendingPathComponent:@"Library/Caches/a.mp4"]),
+                  @"single-rule run deletes the files");
+            __block NSDictionary *again = nil;
+            cl_custom_clean_run_one_rule(@[item3], rule3, nil, ^(NSDictionary *result) {
+                again = result; dispatch_semaphore_signal(sem);
+            });
+            dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            check([again[@"freed"] unsignedLongLongValue] == 0 &&
+                  [again[@"failed"] unsignedIntegerValue] == 0,
+                  @"single-rule idempotent re-run frees 0 with no errors");
+
             // --- App count after clean-all (v2.3 regression): the store
             // keeps the measured total even when every row is ~0 bytes. ---
             CLCacheItem *app1 = [CLCacheItem new];
@@ -125,7 +297,7 @@ int main(void)
             CLCacheStore *store = [CLCacheStore shared];
             [store updateWithItems:@[app1, app2, logs] limited:NO totalApps:114];
             check(store.appCount == 2, @"appCount counts non-log rows");
-            check(store.totalAppCount == 114, @"totalAppCount is the measured container total");
+            check(store.totalAppCount == 114, @"totalAppCount is the measured app total (v2.4: Application containers only, not PluginKitPlugin)");
             check(store.totalBytes == 150, @"totalBytes sums all rows");
             // After a clean-all the scan returns no rows at all (every app
             // is sub-64 KB, so the scanner drops them from the list) — but

@@ -59,14 +59,26 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
     printf '\n== Strict iOS arm64 syntax/link checks ==\n'
     IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
     MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Info.plist)
-    SOURCES=(Core/CLGrant.m Core/CLScan.m Core/CLCache.m Core/CLApp.m Core/CLLaunchServices.m Core/CLCustomClean.m App/CLUI.m App/CLCleanerViewController.m App/CLAppsViewController.m App/CLCustomCleanViewController.m App/CLAppActions.m App/CLAppDirectoryViewController.m App/CLHomeViewController.m App/CLSettingsViewController.m App/CLLogViewController.m App/CLTabBarController.m App/main.m)
-    FLAGS=(-fobjc-arc -fmodules "-fmodules-cache-path=$OUT/modules-ios" -arch arm64 "-miphoneos-version-min=$MIN_OS" -isysroot "$IOS_SDK" -I Core -I App -Wall -Wextra -Werror -O2)
+    # The App Intent (v2.4) is Swift, compiled into the main app target:
+    # compile it first — it emits the generated ObjC header main.m imports
+    # (CleanerIntents-Swift.h) and the object linked into the app binary.
+    # This also type-checks the Swift file on the macOS runner.
+    xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$IOS_SDK" -O -swift-version 5 \
+        -module-name CleanerIntents \
+        -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
+        -emit-objc-header-path "$OUT/CleanerIntents-Swift.h" \
+        -I Core -c Intents/CleanerIntents.swift -o "$OUT/CleanerIntents.o" > "$OUT/ios-swift.log" 2>&1 || {
+            cat "$OUT/ios-swift.log" >&2
+            exit 1
+        }
+    SOURCES=(Core/CLGrant.m Core/CLScan.m Core/CLCache.m Core/CLApp.m Core/CLLaunchServices.m Core/CLCustomClean.m Core/CLBackgroundClean.m App/CLUI.m App/CLCleanerViewController.m App/CLAppsViewController.m App/CLCustomCleanViewController.m App/CLAppActions.m App/CLAppDirectoryViewController.m App/CLHomeViewController.m App/CLSettingsViewController.m App/CLLogViewController.m App/CLTabBarController.m App/main.m)
+    FLAGS=(-fobjc-arc -fmodules "-fmodules-cache-path=$OUT/modules-ios" -arch arm64 "-miphoneos-version-min=$MIN_OS" -isysroot "$IOS_SDK" -I Core -I App -I "$OUT" -Wall -Wextra -Werror -O2)
     xcrun --sdk iphoneos clang -fsyntax-only "${FLAGS[@]}" "${SOURCES[@]}" > "$OUT/ios-syntax.log" 2>&1 || {
         cat "$OUT/ios-syntax.log" >&2
         exit 1
     }
-    xcrun --sdk iphoneos clang "${FLAGS[@]}" -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers \
-        "${SOURCES[@]}" -o "$OUT/Cleaner-link-check" > "$OUT/ios-link.log" 2>&1 || {
+    xcrun --sdk iphoneos clang "${FLAGS[@]}" -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers -framework AppIntents \
+        "${SOURCES[@]}" "$OUT/CleanerIntents.o" -o "$OUT/Cleaner-link-check" > "$OUT/ios-link.log" 2>&1 || {
         cat "$OUT/ios-link.log" >&2
         exit 1
     }

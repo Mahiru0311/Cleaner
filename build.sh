@@ -57,15 +57,32 @@ trap cleanup EXIT
 APP="$OUT/Payload/Cleaner.app"
 mkdir -p "$APP"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+# App Intent (v2.4): CleanerIntents.swift is compiled first — it emits the
+# generated ObjC header (CleanerIntents-Swift.h, imported by App/main.m
+# for the keepAlive call) and the object file linked into the app below.
+# The intent lives in the MAIN APP target, not in an extension: with
+# openAppWhenRun = false iOS headless-launches the app process in the
+# background and runs perform() in-process, so the clean uses the same
+# sandbox grant, measurement cache and custom rules as the app itself.
+# -swift-version 5 keeps Swift 6 strict-concurrency diagnostics out of
+# the NSDictionary bridging; no -dead_strip risk here — main.m references
+# CLIntentsBootstrap, which references the intent types.
+xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -O -swift-version 5 \
+    -module-name CleanerIntents \
+    -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
+    -emit-objc-header-path "$OUT/CleanerIntents-Swift.h" \
+    -I Core -c Intents/CleanerIntents.swift -o "$OUT/CleanerIntents.o"
 xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/ModuleCache" -arch arm64 \
     -miphoneos-version-min="$MINIMUM_IOS_VERSION" \
-    -isysroot "$SDK" -I Core -I App -Wall -Wextra -Werror -Os -flto -dead_strip \
+    -isysroot "$SDK" -I Core -I App -I "$OUT" -Wall -Wextra -Werror -Os -flto -dead_strip \
     -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers \
+    -framework AppIntents \
     Core/CLGrant.m Core/CLScan.m Core/CLCache.m Core/CLApp.m Core/CLLaunchServices.m Core/CLCustomClean.m \
+    Core/CLBackgroundClean.m \
     App/CLUI.m App/CLCleanerViewController.m App/CLAppsViewController.m App/CLCustomCleanViewController.m \
     App/CLAppActions.m App/CLAppDirectoryViewController.m \
     App/CLHomeViewController.m App/CLSettingsViewController.m App/CLLogViewController.m \
-    App/CLTabBarController.m App/main.m -o "$APP/Cleaner"
+    App/CLTabBarController.m App/main.m "$OUT/CleanerIntents.o" -o "$APP/Cleaner"
 xcrun --sdk iphoneos strip -x "$APP/Cleaner"
 cp Info.plist "$APP/Info.plist"
 cp icons/AppIcon*@*.png "$APP/"
@@ -90,6 +107,15 @@ validate_app() {
         fail "unable to inspect signed entitlements"
     [[ "$signed_entitlements" == *"$APP_GROUP"* ]] || \
         fail "signed app is missing required App Group $APP_GROUP"
+    # App Intent (v2.4): the binary must link AppIntents and still contain
+    # the intent types after -dead_strip (main.m's keepAlive call is what
+    # keeps them). Without these, the shortcut silently disappears.
+    otool -L "$app_path/Cleaner" | grep -q "AppIntents" || \
+        fail "app binary does not link AppIntents"
+    grep -a -q "CleanCacheIntent" "$app_path/Cleaner" || \
+        fail "app binary is missing the CleanCacheIntent type"
+    grep -a -q "CleanerShortcuts" "$app_path/Cleaner" || \
+        fail "app binary is missing the CleanerShortcuts provider"
 }
 
 # Package to a same-directory temporary sibling, then validate the actual ZIP

@@ -260,6 +260,24 @@ typedef struct {
     unsigned long long freed;
     NSUInteger failed;
     BOOL limited;
+    // v2.4 filters (0 = no filter): only files older than minAgeSeconds,
+    // and with minSize <= size <= maxSize (maxSize 0 = no maximum).
+    NSTimeInterval minAgeSeconds;
+    unsigned long long minSize;
+    unsigned long long maxSize;
+    NSTimeInterval now;  // Unix epoch, captured once at walk start
+    BOOL dryRun;         // count + sample only, delete nothing
+    NSUInteger matched;  // files matching pattern + filters
+    unsigned long long matchedBytes;
+    NSUInteger skipped;  // pattern-matched but filtered out by age/size
+    NSMutableArray<NSString *> *sample;  // container-relative paths, capped at 50
+    // v2.4 hardening: the container identity is re-checked immediately
+    // before every delete — if the container was replaced mid-walk, the
+    // walk stops instead of deleting from a different container.
+    dev_t containerDevice;
+    ino_t containerInode;
+    BOOL containerIdentityKnown;
+    BOOL stop;
 } CLCleanMatch;
 
 static void cl_clean_match_fd(int dirfd, NSString *path, NSString *container, CLCleanMatch *m,
@@ -270,7 +288,7 @@ static void cl_clean_match_fd(int dirfd, NSString *path, NSString *container, CL
     DIR *dir = fdopendir(listing);
     if (!dir) { close(listing); m->limited = YES; return; }
     for (;;) {
-        if (cancellation.isCancelled) break;
+        if (cancellation.isCancelled || m->stop) break;
         errno = 0;
         struct dirent *entry = readdir(dir);
         if (!entry) { if (errno) m->limited = YES; break; }
@@ -306,23 +324,71 @@ static void cl_clean_match_fd(int dirfd, NSString *path, NSString *container, CL
                 }
             }
             if (!match) continue;
+            // v2.4 filters: a pattern match that is too new, too small or
+            // too big is skipped (counted), not deleted and not an error.
+            if (m->minAgeSeconds > 0) {
+                NSTimeInterval mtime = (NSTimeInterval)st.st_mtimespec.tv_sec +
+                    (NSTimeInterval)st.st_mtimespec.tv_nsec / 1000000000.0;
+                if (mtime > m->now - m->minAgeSeconds) { m->skipped++; continue; }
+            }
+            if ((m->minSize > 0 && (unsigned long long)st.st_size < m->minSize) ||
+                (m->maxSize > 0 && (unsigned long long)st.st_size > m->maxSize)) {
+                m->skipped++;
+                continue;
+            }
+            // v2.4 hardening: re-validate the container identity
+            // immediately before the delete.
+            if (m->containerIdentityKnown) {
+                struct stat cst;
+                if (lstat(m->container.fileSystemRepresentation, &cst) != 0 ||
+                    cst.st_dev != m->containerDevice || cst.st_ino != m->containerInode) {
+                    m->failed++;
+                    m->limited = YES;
+                    m->stop = YES;
+                    return;
+                }
+            }
             struct stat cur;
             if (fstatat(dirfd, entry->d_name, &cur, AT_SYMLINK_NOFOLLOW) != 0 ||
                 !CLSameObject(&st, &cur)) { m->failed++; continue; }
-            if (unlinkat(dirfd, entry->d_name, 0) == 0) m->freed += (unsigned long long)st.st_size;
-            else m->failed++;
+            if (m->dryRun) {
+                m->matched++;
+                m->matchedBytes += (unsigned long long)st.st_size;
+                if (m->sample && m->sample.count < 50) {
+                    [m->sample addObject:[childPath substringFromIndex:m->container.length + 1]];
+                }
+                continue;
+            }
+            if (unlinkat(dirfd, entry->d_name, 0) == 0) {
+                m->freed += (unsigned long long)st.st_size;
+                m->matched++;
+                m->matchedBytes += (unsigned long long)st.st_size;
+            } else m->failed++;
         }
         // Links and special files: never followed, never deleted by a match rule.
     }
     closedir(dir);
 }
 
-BOOL cl_clean_matching_files(NSString *container, NSArray<NSString *> *extensions,
-                             NSArray<NSString *> *nameSubstrings,
-                             NSArray<NSString *> *excludedRelativePaths,
-                             unsigned long long *freed, NSUInteger *failed,
-                             NSString **reason)
+// Filtered variant (v2.4): age/size filters, a subfolder scope (roots),
+// dry-run preview and cancellation. roots must be container-relative
+// paths under Library/Caches or tmp (nil = both, the old behaviour);
+// anything else is refused. Returns NO when the walk could not start
+// (bad container/roots) or when any delete failed.
+BOOL cl_clean_matching_files_filtered(NSString *container, NSArray<NSString *> *extensions,
+                                      NSArray<NSString *> *nameSubstrings,
+                                      NSArray<NSString *> *excludedRelativePaths,
+                                      const CLCleanMatchOptions *options,
+                                      CLCleanMatchResult *resultOut, NSString **reason)
 {
+    CLCleanMatchOptions opts = options ? *options : (CLCleanMatchOptions){0};
+    NSArray<NSString *> *roots = opts.roots.count ? opts.roots : @[@"Library/Caches", @"tmp"];
+    for (NSString *rel in roots) {
+        if ([rel isEqualToString:@"Library/Caches"] || [rel hasPrefix:@"Library/Caches/"] ||
+            [rel isEqualToString:@"tmp"] || [rel hasPrefix:@"tmp/"]) continue;
+        if (reason) *reason = @"规则子目录只能在 Library/Caches 或 tmp 之下";
+        return NO;
+    }
     if (!container.length) {
         if (reason) *reason = @"容器路径为空";
         return NO;
@@ -332,8 +398,17 @@ BOOL cl_clean_matching_files(NSString *container, NSArray<NSString *> *extension
         return NO;
     }
     CLCleanMatch m = { .extensions = extensions ?: @[], .names = nameSubstrings ?: @[],
-                       .excludes = excludedRelativePaths ?: @[], .container = container };
-    for (NSString *rel in @[@"Library/Caches", @"tmp"]) {
+                       .excludes = excludedRelativePaths ?: @[], .container = container,
+                       .minAgeSeconds = opts.minAgeSeconds, .minSize = opts.minSize,
+                       .maxSize = opts.maxSize, .now = NSDate.date.timeIntervalSince1970,
+                       .dryRun = opts.dryRun, .sample = [NSMutableArray new] };
+    struct stat cst;
+    if (lstat(container.fileSystemRepresentation, &cst) == 0) {
+        m.containerDevice = cst.st_dev;
+        m.containerInode = cst.st_ino;
+        m.containerIdentityKnown = YES;
+    }
+    for (NSString *rel in roots) {
         if (cl_clean_match_excluded(rel, m.excludes)) continue;
         NSString *root = [container stringByAppendingPathComponent:rel];
         int fd = cl_open_directory(root);
@@ -342,13 +417,36 @@ BOOL cl_clean_matching_files(NSString *container, NSArray<NSString *> *extension
             m.limited = YES;
             continue;
         }
-        cl_clean_match_fd(fd, root, container, &m, nil);
+        cl_clean_match_fd(fd, root, container, &m, opts.cancellation);
         close(fd);
+        if (m.stop) break;
     }
-    if (freed) *freed = m.freed;
-    if (failed) *failed = m.failed;
+    if (resultOut) {
+        *resultOut = (CLCleanMatchResult){ .freed = m.freed, .failed = m.failed,
+            .skipped = m.skipped, .matched = m.matched, .matchedBytes = m.matchedBytes,
+            .samplePaths = [m.sample copy], .limited = m.limited };
+    }
+    if (m.stop) {
+        if (reason) *reason = @"容器在清理过程中发生变化，已停止";
+        return NO;
+    }
     if (m.failed && reason) *reason = [NSString stringWithFormat:@"%lu 个文件删除失败", (unsigned long)m.failed];
     return m.failed == 0;
+}
+
+BOOL cl_clean_matching_files(NSString *container, NSArray<NSString *> *extensions,
+                             NSArray<NSString *> *nameSubstrings,
+                             NSArray<NSString *> *excludedRelativePaths,
+                             unsigned long long *freed, NSUInteger *failed,
+                             NSString **reason)
+{
+    CLCleanMatchResult r;
+    CLCleanMatchOptions opts = {0};
+    BOOL ok = cl_clean_matching_files_filtered(container, extensions, nameSubstrings,
+                                               excludedRelativePaths, &opts, &r, reason);
+    if (freed) *freed = r.freed;
+    if (failed) *failed = r.failed;
+    return ok;
 }
 
 // Flush a completed staging tree without following any links or opening special
@@ -664,9 +762,12 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
     }
     _totalBytes = total;
     _appCount = apps;
-    // totalApps is the count of containers actually measured (v2.3). appCount
-    // above drops apps under 64 KB — after a clean every app is ~0 bytes and
-    // appCount falls to 0, which is what the home showed (the v2.3 bug).
+    // totalApps is the count of DISTINCT APPS actually measured (v2.4:
+    // Application containers only). appCount above drops apps under 64 KB
+    // — after a clean every app is ~0 bytes and appCount falls to 0,
+    // which is what the home showed (the v2.3 bug). v2.3's fix counted
+    // every container including PluginKitPlugin extensions and showed
+    // 1226; this counts apps, so the home shows 114 and stays 114.
     _totalAppCount = totalApps;
     _limited = limited;
     _scanning = NO;
@@ -704,8 +805,16 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
 @property (nonatomic, strong) NSMutableArray<CLCacheItem *> *items;
 @property (nonatomic) NSUInteger completedCount;
 // Every container measured (including sub-64 KB ones that produce no row).
-// The home's app count comes from this (v2.3), not from the row count.
+// The home's app count comes from totalAppContainers, not from this.
 @property (nonatomic) NSUInteger totalContainers;
+// Distinct APPS measured: containers under Containers/Data/Application
+// only (v2.4). PluginKitPlugin containers (widgets, extensions — about
+// 1100 of them on the user's phone) are measured too, but they are not
+// apps: v2.3 counted every container here and the home showed 1226.
+// One Application container = one app, so this is the clean-list item
+// count (114 on the user's phone) and it survives a clean-all, because
+// enumeration does not depend on cache size.
+@property (nonatomic) NSUInteger totalAppContainers;
 @property (nonatomic) NSUInteger deliveredItemCount;
 @property (nonatomic) BOOL scanLimited;
 @property (nonatomic) NSUInteger limitedContainers;
@@ -860,13 +969,17 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
         NSArray *roots = @[@"/private/var/mobile/Containers/Data/Application",
                            @"/private/var/mobile/Containers/Data/PluginKitPlugin"];
         for (NSString *root in roots) {
-            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalContainers); return; }
+            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalAppContainers); return; }
             NSString *kind = [root.lastPathComponent isEqualToString:@"Application"] ? @"应用" : @"扩展";
+            // Only the Application root holds apps — one container per app.
+            // PluginKitPlugin containers are extensions, counted in
+            // totalContainers (progress) but NOT in totalAppContainers.
+            BOOL isAppRoot = [root.lastPathComponent isEqualToString:@"Application"];
             NSArray *containers = cl_enumerate(root, 0, cancellation, ^(int64_t done, int64_t total, NSUInteger __unused f) {
                 if (progress) progress([NSString stringWithFormat:@"正在查找%@… %lld%%", kind, (long long)(done * 100 / (total ?: 1))]);
             });
             if (!containers) {
-                if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalContainers); return; }
+                if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalAppContainers); return; }
                 ctx.scanLimited = YES;
                 failedEnumerations++;
                 cl_log(@"cache scan: %@ container enumeration failed", kind);
@@ -898,6 +1011,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
                     if (item) [ctx.items addObject:item];
                     ctx.completedCount++;
                     ctx.totalContainers++;
+                    if (isAppRoot) ctx.totalAppContainers++;
                     NSUInteger doneInRoot = ctx.completedCount - baseCompleted;
                     // Deliver finished rows in batches of 8 (sorted by
                     // size inside the batch) so the list fills in while
@@ -920,7 +1034,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
                     }
                 }
             });
-            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalContainers); return; }
+            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalAppContainers); return; }
         }
         unsigned long long crash = 0;
         // Crash logs are in a system group, which worse_query reaches on iOS 27
@@ -930,7 +1044,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
         CLCacheMeasurementState crashState = !crashReachable ? CLCacheMeasurementMissing
             : safeCrashPath ? CLCacheMeasureDirectory(CLCrashLogsPath, cancellation, &crash)
                             : CLCacheMeasurementLimited;
-        if (crashState == CLCacheMeasurementCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalContainers); return; }
+        if (crashState == CLCacheMeasurementCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalAppContainers); return; }
         if (crashState == CLCacheMeasurementLimited) {
             ctx.scanLimited = YES;
             ctx.limitedMeasurements++;
@@ -983,7 +1097,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
         cl_log(@"cache scan: %lu items in %.1f s (%lu from the measurement cache)",
                (unsigned long)ctx.items.count, CFAbsoluteTimeGetCurrent() - scanStarted,
                (unsigned long)ctx.measureCacheHits);
-        if (completion) completion([ctx.items copy], ctx.scanLimited, note, NO, ctx.totalContainers);
+        if (completion) completion([ctx.items copy], ctx.scanLimited, note, NO, ctx.totalAppContainers);
     });
 }
 

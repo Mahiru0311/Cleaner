@@ -9,17 +9,24 @@
 //  Liquid Glass, owned by CLTabBarController since v2.1). The check is
 //  Icons.Rounded.CheckCircleOutline: a HOLLOW thick ring + thick check,
 //  #36D167, 110pt, anchored at the green card's bottom-right corner
-//  overflowing outward (+27 right / +31 down).
-//  The overflow only works because the green card is TALLER than the right
-//  column (height = right column + 90) AND the row is top-aligned
-//  (UIStackViewAlignmentTop, like KSU's Row default): the right column ends
-//  90pt above the card's bottom, the badge's top is at bottom - 79, so
-//  11pt of empty space sits between the badge and the white cards, and
-//  the 44pt gap below the row clears the 31pt downward overflow from the
-//  info card. v2.1/v2.2 used alignment Fill, which stretched the right
-//  column to the card's height — the badge then overlapped the white card
-//  by 79pt vertically and 14pt horizontally, and the card (drawn on top)
-//  covered its right half. The test file encodes this layout math.
+//  offset (+27 right / +31 down).
+//  THE KEY POINT (v2.4, user 2026-11-10 20:00, verified against the KSU
+//  source + a zoomed crop of the original): the icon is NOT a complete
+//  circle. It sits INSIDE the Card, offset so 27dp of its width and 31dp
+//  of its height stick out past the card's right and bottom edges — and
+//  the Card CLIPS its content, so the ring is cut clean at the card's
+//  right and bottom edges: only ~3/4 of the arc + the check are drawn.
+//  Our v2.0–v2.3 CLCheckBadgeView did the opposite: a complete ring with
+//  clipsToBounds = NO, dangling outside the card — which is why it always
+//  looked floating and fake. The fix is the KSU way: clipsToBounds = YES
+//  on the status card, badge keeps 110pt / +27 / +31, the card cuts it.
+//  Because the badge is clipped, it can never touch the white cards —
+//  so the +90pt extra green-card height (v2.3) is gone: the green card
+//  is exactly as tall as the right column (KSU's Row uses
+//  height(IntrinsicSize.Min); measured on the reference: green 543x578,
+//  right column 549x574, ratio ~1.007 ≈ 1:1, widths ~50/50). The tall
+//  empty green slab the user complained about ("这里长出来这么多") is
+//  gone at the root. The test file encodes this layout math.
 //  (Design history, 2026-11-10: the 19:17 full-width rectangle and the
 //  19:20 white-card variants were both rejected by the user; the final
 //  direction, 19:28, is this 1:1 KSU home.)
@@ -194,9 +201,11 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         return;
     }
     CLCacheStore *store = [CLCacheStore shared];
-    // totalAppCount (v2.3), NOT appCount: appCount drops apps under 64 KB,
+    // totalAppCount (v2.4), NOT appCount: appCount drops apps under 64 KB,
     // so after a clean it fell to 0 — the v2.3 bug. totalAppCount is the
-    // count of containers actually measured, independent of cache size.
+    // count of DISTINCT APPS actually measured (Application containers
+    // only — v2.3 counted every container including ~1100 PluginKitPlugin
+    // extensions and showed 1226), independent of cache size.
     self.appCountLabel.text = store.lastScanFinished > 0
         ? [NSString stringWithFormat:@"%lu", (unsigned long)store.totalAppCount] : @"–";
     self.reclaimableLabel.text = store.lastScanFinished > 0
@@ -233,7 +242,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
 
 - (void)refreshStatus
 {
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.3";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.4";
     BOOL supported = cl_system_supported();
     BOOL hasGroup = cl_app_group() != nil;
     if (!supported) {
@@ -508,7 +517,13 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     // Status row: green card left, two white mini cards right.
     UIView *status = [UIView new];
     status.layer.cornerRadius = 28;
-    status.clipsToBounds = NO;
+    // v2.4: the card CLIPS its content (KSU's Card does the same) — the
+    // 110pt check badge is offset +27/+31 past the bottom-right corner,
+    // and the card cuts the ring at its right and bottom edges, leaving
+    // ~3/4 of the arc + the check (HomeMiuix.kt). clipsToBounds = NO
+    // (v2.0–v2.3) drew a complete ring dangling outside the card, which
+    // is why it always looked floating and fake.
+    status.clipsToBounds = YES;
     self.statusCard = status;
     self.statusTitleLabel = [self makeLabel:@"已授权" font:[UIFont systemFontOfSize:22 weight:UIFontWeightSemibold]
                                       color:UIColor.labelColor];
@@ -517,7 +532,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     self.statusModeLabel = [self makeLabel:@"<App Group> [沙盒模式]" font:[UIFont systemFontOfSize:15 weight:UIFontWeightMedium]
                                      color:UIColor.labelColor];
     self.statusModeLabel.numberOfLines = 2;
-    self.statusVersionLabel = [self makeLabel:@"版本：0.2.3" font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
+    self.statusVersionLabel = [self makeLabel:@"版本：0.2.4" font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
                                         color:UIColor.labelColor];
     UIStackView *statusTexts = [[UIStackView alloc] initWithArrangedSubviews:@[
         self.statusTitleLabel, self.statusModeLabel, self.statusVersionLabel]];
@@ -530,20 +545,15 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         [statusTexts.trailingAnchor constraintEqualToAnchor:status.trailingAnchor constant:-16],
         [statusTexts.topAnchor constraintEqualToAnchor:status.topAnchor constant:14],
     ]];
-    // Check badge, v2.3: KSU's CheckCircleOutline — hollow #36D167 ring +
+    // Check badge, v2.4: KSU's CheckCircleOutline — hollow #36D167 ring +
     // thick check, 110pt, anchored at the green card's bottom-right corner
-    // overflowing outward (+27 right / +31 down, HomeMiuix.kt).
-    // It only clears the white cards because the green card is taller
-    // than the right column (height = right column + 90, below) AND the
-    // row is top-aligned: the right column ends 90pt above the card's
-    // bottom, the badge's top is at bottom - 79, so 11pt of empty space
-    // sits between the badge and the white cards. v2.1/v2.2 used alignment
-    // Fill, which stretched the right column to the card's height — the
-    // badge then overlapped the white card by 79pt vertically and 14pt
-    // horizontally, and the card (drawn on top) covered its right half.
-    // The badge is a subview of the card, drawn above it; the 44pt gap
-    // below the row (set after the row is added) clears the 31pt downward
-    // overflow from the info card.
+    // offset (+27 right / +31 down, HomeMiuix.kt). The badge frame sticks
+    // out past the card on the right and bottom — and the card CLIPS it
+    // (clipsToBounds = YES above), so the ring is cut at the card's right
+    // and bottom edges: ~3/4 of the arc + the check, exactly like KSU.
+    // Because the badge is clipped, it can never reach the white cards,
+    // so the green card needs no extra height (see the equal-height
+    // constraint below) and the row needs no extra gap below it.
     self.checkBadgeView = [CLCheckBadgeView new];
     self.checkBadgeView.translatesAutoresizingMaskIntoConstraints = NO;
     [status addSubview:self.checkBadgeView];
@@ -579,29 +589,36 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     UIStackView *statusRow = [[UIStackView alloc] initWithArrangedSubviews:@[status, rightColumn]];
     statusRow.axis = UILayoutConstraintAxisHorizontal;
     statusRow.spacing = 13;
-    // Top alignment, not Fill: the right column must NOT be stretched to
-    // the status card's height — it stays at its intrinsic height, top
-    // aligned, leaving the 90pt of empty space the badge overflows into.
+    // Top alignment, not Fill: the right column must NOT be stretched —
+    // the row's height comes from the taller of the two, and with the
+    // equal-height constraint below that is the right column itself.
     statusRow.alignment = UIStackViewAlignmentTop;
     [NSLayoutConstraint activateConstraints:@[
-        [status.widthAnchor constraintEqualToAnchor:statusRow.widthAnchor multiplier:0.55],
-        // The status card is 90pt taller than the right column. The badge
-        // spans bottom-79..bottom+31; the right column ends at bottom-90.
-        // Clearance: 90 - (110 - 31) = 11pt above the white cards.
-        [status.heightAnchor constraintEqualToAnchor:rightColumn.heightAnchor constant:90],
-        [status.heightAnchor constraintGreaterThanOrEqualToConstant:212],
+        // Measured on the KSU reference (1206x2680): green card 543px
+        // wide, right column 549px, gap ~36px — green is ~0.48 of the row
+        // width, i.e. a ~50/50 split.
+        [status.widthAnchor constraintEqualToAnchor:statusRow.widthAnchor multiplier:0.48],
+        // v2.4: the green card is EXACTLY as tall as the right column
+        // (KSU's Row height(IntrinsicSize.Min); measured 578px vs 574px,
+        // ratio ~1.007 ≈ 1:1). The v2.3 "+90" made a tall empty slab
+        // ("这里长出来这么多"); it is gone, and it is gone for good —
+        // the badge is clipped by the card, so no extra height is ever
+        // needed to clear the white cards. No minimum height either: a
+        // 212pt floor would re-introduce a slab whenever the right column
+        // is shorter than 212pt.
+        [status.heightAnchor constraintEqualToAnchor:rightColumn.heightAnchor],
     ]];
     [content addArrangedSubview:statusRow];
     [statusRow bringSubviewToFront:status];
-    // 44pt gap below the row: the badge overflows 31pt below the card, so
-    // 13pt of clear space remains before the info card.
-    [content setCustomSpacing:44 afterView:statusRow];
+    // 13pt gap below the row, like every other gap: the badge is clipped
+    // at the card's bottom edge, so nothing overflows below the row.
+    [content setCustomSpacing:13 afterView:statusRow];
 
     // Info card: one white rounded card, icon + bold title + grey value.
     UIView *info = [UIView new];
     info.backgroundColor = UIColor.systemBackgroundColor;
     info.layer.cornerRadius = 28;
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.3";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.4";
     NSString *build = NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"1";
     self.groupStatusValueLabel = [UILabel new];
     NSArray<UIView *> *rows = @[

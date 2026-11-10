@@ -105,7 +105,7 @@
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    if (section == 1) return @"无需服务器：快捷指令直接打开 Cleaner 的链接，全部在本机完成。cleaner://clean 会先显示清理确认框，确认后才清理。";
+    if (section == 1) return @"点一下就在后台清理，不打开应用：快捷指令里添加 Cleaner 的「清理全部缓存」操作（或直接用预置的快捷指令）。cleaner://clean 链接仍可用，但会打开应用并弹确认框。";
     if (section == 2) return @"图标风格参考 huamidev/GestaltX（GPL-3.0）；fd 遍历与清理记账参考 YangJiiii/3105（GPL-3.0）。Cleaner 是 GPL-3.0-or-later 开源软件。";
     return nil;
 }
@@ -136,7 +136,7 @@
     }
     if ([action isEqualToString:@"shortcuts-guide"]) {
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"添加到快捷指令"
-            message:@"1. 打开「快捷指令」，点右上角 + 新建快捷指令。\n2. 添加操作「打开 URL」，填 cleaner://clean（清理）或 cleaner://scan（重新扫描）。\n3. 点完成，就可以在主屏幕、锁屏或用 Siri 直接调用清理。不需要服务器，全部在本机完成。"
+            message:@"1. 打开「快捷指令」，点右上角 + 新建快捷指令。\n2. 添加 Cleaner 的「清理全部缓存」操作（或直接在快捷指令里找到 Cleaner 预置的快捷指令）。\n3. 点完成，就可以在主屏幕、锁屏、操作按钮或用 Siri 直接调用——点一下就在后台清理，不打开应用。不需要服务器，全部在本机完成。\n备用的老办法：添加操作「打开 URL」，填 cleaner://clean（会打开应用并弹确认框）或 cleaner://scan（重新扫描）。"
             preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
         [self presentViewController:alert animated:YES completion:nil];

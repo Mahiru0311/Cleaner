@@ -611,3 +611,96 @@ PlistBuddy 检查 OK，签名用了 `--entitlements entitlements.plist`。
 调用、自定义清理流程、动画（倒数、弹簧对勾、震动）——都须用户在
 iPhone 17 / iOS 27.0 上装 0.2.3 后看截图确认。另：设备型号行会从
 “iPhone 17 Pro Max”变成“iPhone 17”（映射修正，见上）。
+
+## 11. v2.4（2026-11-10 晚，v2.3 真机截图反馈：绿板子 + 1226 + 后台快捷指令 + 规则细化）
+
+用户 2026-11-10 19:50 反馈（截图 docs/v2-3-real-device-home-2026-11-10.jpg）：
+「你看这样哪里好看了啊？这里长出来这么多」（绿卡是高出一大截的空板子）；
+「我说的快捷方式是不需要打开应用，直接点击快捷方式，它就会自动清理，我的意思是在后台」；
+「规则还得细心一点，逻辑也得增强，继续优化修改」。
+另：截图上应用数显示 1226（错误，应为 114）。
+20:00 用户又指出对勾做法的根本问题（Muse 已核对 KernelSU 源码 + 原图裁剪放大确认，
+见下），取代了原计划的「绿卡 +90pt + 完整圆环溢出」方案。
+
+1. **首页对勾：裁剪，不是溢出。** KSU 的 ✅ 并不是一个完整的圆圈。
+   HomeMiuix.kt（本地 clone：manager/app/src/main/java/me/weishu/kernelsu/ui/screen/home/HomeMiuix.kt，
+   StatusCard）确实是 Icons.Rounded.CheckCircleOutline、110dp、offset(+27dp, +31dp)、tint #36D167——
+   但关键是：那个图标放在 Card 里面，而 Card 会裁剪内容，所以圆环超出卡片底边和右边的部分根本不画出来。
+   原图放大看得很清楚：圆环在左、上是完整的，到右下角被卡片的右边缘和底边缘齐齐切断，只剩约四分之三的弧 +
+   里面的对勾。Muse 用像素核对过：圆环底部弧线在 x340–420、y1030–1057 区域是 0 像素（左侧对照 145），
+   而左、上侧完整——确实被切断了。我们 v2.0–v2.3 的 CLCheckBadgeView 是反的：画了一个完整圆环，而且
+   status 卡 clipsToBounds = NO，让整个圆吊在卡片外面——这就是它一直看着飘、看着假的原因。
+   改法：状态卡 clipsToBounds = YES，对勾保持 110pt、+27/+31 偏移，卡片会像 KSU 一样把圆环切断。
+   由此 90pt 加高不再需要——裁剪后对勾不可能碰到白卡。绿卡高度按实测的 KSU 比例：绿卡高 ≈ 右列总高
+   （约 1:1；实测：KSU 原图 1206×2680，绿卡 x 40–583、y 约 480–1058，高 ≈578；右列 x 619–1168、
+   y 482–1056，高 ≈574；比值 ≈1.007；绿卡宽 543、右列宽 549，约 50/50；圆环 bbox x 213–582、
+   y 697–1055）。实现：绿卡宽改为 row 的 0.48（原 0.55），高改为 = 右列高（删 +90 与 212pt 下限），
+   行下间距 44pt 改回 13pt。v2.3 截图实测的板子：绿卡高 ≈312pt、右列 ≈193pt，比值 ≈1.6——
+   +90 是板子的根因。「高出一截的空绿板子」连根拔掉。测试断言相应改：状态卡 clipsToBounds 为真；
+   绿卡高与右列总高比值约 1:1；对勾 frame 超出卡片边界（+27/+31，证明裁剪确实在切它）；其他三态的
+   88pt 卡内图标不受影响。
+2. **应用数 1226 修回 114。** 根因：v2.3 的 totalAppCount 数的是 CONTAINERS——扫描器数了
+   Application 根下的 114 个应用容器 + PluginKitPlugin 根下的约 1112 个扩展容器（每个应用有好几个
+   容器/插件/扩展），合计 1226。修法：扫描器新增 ctx.totalAppContainers，只在 Application 根下计数
+   （一个容器 = 一个应用），completion 传它；totalContainers 仍保留（进度条用）。首页读 totalAppCount
+   不变，清理后仍是 114（枚举与缓存大小无关）。回归测试：tests/CLCustomCleanTests.m 里清完后
+   totalAppCount 仍是 114（注释已改：是应用数，不是容器数）。
+3. **后台快捷指令：App Intent 在主应用内，不开扩展。** v2.3 的 cleaner://clean（打开应用 + 弹确认框）
+   不满足「不需要打开应用，直接点击快捷方式，它就会自动清理，我的意思是在后台」——不再把它当作解法，
+   只留作备用。实现方式**与原计划不同，原计划是新建 App Intents 扩展 target**；动手前核对了两件事，
+   改成了更稳的方案，理由记在这里：
+   - 现代 App Intents 扩展是 ExtensionKit 形态（`@main struct : AppIntentsExtension`、
+     Info.plist 用 `EXAppExtensionAttributes` → `EXExtensionPointIdentifier`、装进 `Extensions/` 目录），
+     不是老式的 NSExtension/PlugIns——老形态会被系统静默忽略；而且从无 .xcodeproj 的 clang CLI 构建
+     里拼一个 ExtensionKit 扩展，包结构和入口点都无法在本地验证。
+   - 三个独立来源（jot-mobile 的 shortcuts 研究、playola 的设计文档、IntentTodo 的执行过程技能，
+     均引 WWDC 2026-345）确认：plain `AppIntent` 编译进**主应用 target**、`openAppWhenRun = false`
+     时，iOS 会无头启动应用进程（不建 scene）、在进程内跑 perform()、把结果返回快捷指令——用户看不到
+     应用打开。App Intents 扩展不是必需的；WWDC 2026 的建议是把会写数据的 intent 钉在主应用进程
+     （`allowedExecutionTargets = [.main]`，本次没加——包里没有扩展，系统只能选主应用；且该 API 的
+     SDK 可用版本未经核对，不赌）。
+   - 决定性好处：intent 跑在**主应用进程里**，沙盒授权就是 v2/v2.3 已在真机上验证过的同一条路，
+     「扩展进程里授权能不能签发」这个未验证问题直接消失；测量的 24h 缓存和自定义规则 plist 也不用搬去
+     App Group（同一进程，目录相同）。
+   实现：新文件 Intents/CleanerIntents.swift（`CleanCacheIntent: AppIntent`，标题「清理全部缓存」，
+   `openAppWhenRun = false`；`CleanerShortcuts: AppShortcutsProvider` 预置一条快捷指令，出现在快捷指令
+   应用里，可绑操作按钮）+ Intents/CleanerIntents-Bridging-Header.h；新 Core/CLBackgroundClean.*
+   （`CLBackgroundCleanRun(25)`：同步跑默认清理——扫描（走 24h 缓存）+ 逐应用先 CLCacheValidateItem
+   再清 Library/Caches + tmp + 已启用的自定义规则；不含崩溃日志；25 秒预算——快捷指令约 30 秒执行上限，
+   超时就停开新应用并如实报部分进度 partial=YES、appsRemaining>0；结果含 freed/customFreed/failed/
+   appsCleaned/appsSkipped/appsRemaining/appsTotal/partial/timedOut/duration）。
+   build.sh：先 swiftc 编译 Swift（-swift-version 5，生成 CleanerIntents-Swift.h），再把对象文件链进主
+   二进制（+ `-framework AppIntents`，+ Core/CLBackgroundClean.m）；main.m 调
+   `[CLIntentsBootstrap keepAlive]`（Swift 侧的 @objc 类，引用两个 intent 类型，防止 -dead_strip 把它们
+   链掉——系统靠扫描二进制发现 intent，无引用会被静默删掉）；build.sh 校验二进制链接 AppIntents 且仍含
+   CleanCacheIntent / CleanerShortcuts。设置页文案改成后台清理为主、URL scheme 为备用。
+   **仍须用户在真机上验证**：快捷指令里能否看到「清理全部缓存」；点一下是否不打开应用就清理、返回释放了多少；
+   25 秒预算够不够一次清完（不够会报部分完成，再跑一次即可——缓存已热、已清的应用量出来 ~0）。
+4. **自定义清理：规则更细 + 逻辑更硬。** 规则新增 4 个可选筛选（仅扩展名/文件名规则可用；
+   文件夹规则整文件夹清，不支持这些筛选，校验会拒绝而不是静默忽略）：
+   (a) 年龄——只删 N 天前的文件（minAgeDays，0–3650 天）；
+   (b) 大小——只删大于 X / 小于 Y 的文件（minSize/maxSize，单位字节，UI 里填 KB，上限 1TB，min≤max）；
+   (c) 子目录——规则只在某个子目录下生效（subfolder，如 Library/Caches/com.foo；裸名视为
+   Library/Caches 下的子目录；只能在 Library/Caches 或 tmp 之下）；
+   (d) **试运行预览**——执行前先算匹配文件数 + 总字节 + 前 50 个样例路径，确认后再清理（点一条规则 →
+   「预览匹配」→ 弹框显示「会删 N 个文件，共 X，涉及 M 个应用」+ 前 10 个样例 → 「清理这些文件」；
+   另有单条执行 cl_custom_clean_run_one_rule）。
+   (e) 规则校验——cl_custom_clean_validate_rule：类型/内容/年龄/大小/子目录全量校验，无效规则跳过并上报、
+   永不执行（旧的 folder pattern 校验保留）。
+   (f) 引擎加固——删除前立即重验容器身份（fd 遍历里每次 unlink 前 lstat 容器比对 dev/ino，变了就停）；
+   逐项记账（freed / failed / skipped / matched / matchedBytes，skipped = 匹配了模式但被年龄/大小筛掉的）；
+   部分失败上报（failed + reason）；幂等重跑（第二次 freed 0、无错误）；中断安全（取消只停在应用之间，
+   删是逐文件 unlinkat，没有半删状态，下一跑接着清；新 cl_custom_clean_run_with_cancellation）。
+   UI：加规则时扩展名/文件名会多一步「筛选（可选）」（年龄天数、最小 KB、最大 KB、子目录，留空=不过滤，
+   「跳过」= 不筛选）；规则行点开有预览/启用停用/删除；规则摘要里显示筛选（如「· 30天前 · >1MB ·
+   于 Library/Caches/xxx」）；运行结果里报跳过数。
+
+本地已验（Linux，无 Xcode）：`browser_ui_regressions.py` 通过（新增断言：首页裁剪（clipsToBounds 真、
+绿卡=右列高、0.48 宽、对勾 +27/+31 超出卡片、行下间距 13）、应用数只计 Application 容器、
+主应用内 App Intent（无 appex/PlugIns、swiftc + AppIntents 链接、keepAlive、25 秒预算）、
+规则筛选 + 试运行 + 校验 + 引擎记账、版本 0.2.4）；
+`python3 -m unittest discover -s tests -p 'test_*.py'` 16 个，2 个失败与 v2.0–v2.3 相同
+（`test_build` 两用例缺 `plutil`，Linux 固有）；`bash -n build.sh` 及各 runner 通过。
+macOS runner 上 16 个 unittest 应全过（有 plutil），另有 ObjC 套件（含新增
+`CLCustomCleanTests`：规则校验、年龄/大小/子目录筛选、试运行数学与实际一致、幂等重跑、
+中断安全（预取消 + 中途取消 2000 文件）、试运行预览 + 单条执行）。

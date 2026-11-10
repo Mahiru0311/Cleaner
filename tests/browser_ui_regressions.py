@@ -76,7 +76,11 @@ require(cleaner, "清理（%@）", "clean button shows selected size")
 # v2.3 (user, 2026-11-10 19:28): the final direction is the 1:1 KSU home —
 # the 19:17 full-width rectangle and the 19:20 white-card variants were
 # both rejected. Green card #DFFAE4, hollow CheckCircleOutline badge
-# #36D167, 110pt, overflowing the card's bottom-right corner (+27/+31).
+# #36D167, 110pt, at the card's bottom-right corner (+27/+31), CLIPPED
+# by the card (v2.4): KSU's icon sits inside the Card and the Card cuts
+# the ring at its right and bottom edges — only ~3/4 of the arc + the
+# check are drawn. A complete ring dangling outside the card (v2.0–v2.3)
+# is what always looked floating and fake.
 require(home, "0xDFFAE4", "green status card #DFFAE4")
 require(home, "0x36 / 255.0 green:0xD1 / 255.0 blue:0x67", "check badge #36D167")
 require(home, "CheckCircleOutline", "hollow outline check badge (KSU icon)")
@@ -108,24 +112,31 @@ forbid(home, 'systemImageNamed:@"power"', "deleted power button icon")
 require(home, "userRefresh", "pull-to-refresh rescan")
 require(home, "scroll.refreshControl = refresh;", "home refresh control")
 require(home, "constant:-32", "content width for 16pt side margins")
-require(home, "constraintGreaterThanOrEqualToConstant:212", "green card min height 212")
-# --- Home layout (v2.3): the 110pt badge overflows again (+27/+31), and it
-# only clears the white cards because the green card is taller than the
-# right column (height = right column + 90) AND the row is top-aligned
-# (UIStackViewAlignmentTop, like KSU's Row default). v2.1/v2.2 used
-# alignment Fill, which stretched the right column to the card's height —
-# the badge then overlapped the white card by 79pt vertically and 14pt
-# horizontally, and the card (drawn on top) covered its right half.
+forbid(home, "constraintGreaterThanOrEqualToConstant:212", "green card min height 212 (v2.3 slab: a floor re-introduces a tall card)")
+# --- Home layout (v2.4, user 2026-11-10 20:00): the badge is CLIPPED,
+# not overflowing. The status card has clipsToBounds = YES, the 110pt
+# badge keeps KSU's +27/+31 offsets (its frame sticks out past the card
+# on the right and bottom — that is what the card cuts), and the green
+# card is EXACTLY as tall as the right column (KSU's Row uses
+# height(IntrinsicSize.Min); measured on the reference: green 543x578,
+# right column 549x574, ratio ~1.007 ≈ 1:1, widths ~50/50). The v2.3
+# "+90" made a tall empty slab ("这里长出来这么多"); it is gone, and
+# the badge can never touch the white cards because the card cuts it.
+# The other states' 88pt in-card icon is unaffected (it never overflowed).
+require(home, "status.clipsToBounds = YES", "status card clips the badge (KSU Card)")
+forbid(home, "status.clipsToBounds = NO", "v2.3 complete ring dangling outside the card")
 require(home, "checkBadgeView.widthAnchor constraintEqualToConstant:110", "110pt check badge")
 require(home, "checkBadgeView.trailingAnchor constraintEqualToAnchor:status.trailingAnchor constant:27",
-        "badge overflows 27pt right")
+        "badge frame extends 27pt past the card's right edge (clipped)")
 require(home, "checkBadgeView.bottomAnchor constraintEqualToAnchor:status.bottomAnchor constant:31",
-        "badge overflows 31pt down")
+        "badge frame extends 31pt past the card's bottom edge (clipped)")
 require(home, "statusRow.alignment = UIStackViewAlignmentTop", "right column top-aligned, not stretched")
-require(home, "constraintEqualToAnchor:rightColumn.heightAnchor constant:90",
-        "green card 90pt taller than the right column")
-require(home, "setCustomSpacing:44 afterView:statusRow", "44pt gap clears the downward overflow")
+require(home, "[status.heightAnchor constraintEqualToAnchor:rightColumn.heightAnchor]",
+        "green card exactly as tall as the right column")
+forbid(home, "rightColumn.heightAnchor constant:90", "v2.3 +90 slab")
+require(home, "setCustomSpacing:13 afterView:statusRow", "13pt gap below the row (nothing overflows)")
 require(home, "bringSubviewToFront:self.checkBadgeView", "badge drawn above the row")
+require(home, "statusIconView.widthAnchor constraintEqualToConstant:88", "other states keep the 88pt in-card icon")
 
 
 def _const(source, pattern, label):
@@ -135,28 +146,32 @@ def _const(source, pattern, label):
     return float(m.group(1))
 
 
-# Layout math, not just strings: the 110pt badge frame must not intersect
-# either right-column white card or the info card below, for any row width.
-# Parsed from the constraints, so a future edit that moves the badge (or
-# changes the row alignment back to Fill, which stretches the right column
-# to the card's height) fails this check instead of shipping.
-# Geometry: the badge spans [greenBottom - (110 - 31), greenBottom + 31]
-# vertically; the right column ends at greenBottom - 90 (top-aligned, so it
-# is NOT stretched). Clearance above the white cards = 90 - (110 - 31).
-# Clearance above the info card = 44 - 31.
+# Layout math, not just strings: the green card must be as tall as the
+# right column (ratio ~1:1, measured on the KSU reference: 578px vs
+# 574px), the badge frame must extend past the card's bounds on the right
+# and bottom (that is what the card clips), and the card must clip
+# (clipsToBounds = YES) — otherwise the badge is a complete ring dangling
+# outside the card again. Parsed from the constraints, so a future edit
+# that re-adds the +90 slab, un-clips the card, or moves the badge fails
+# this check instead of shipping.
+# Geometry: green height == right column height (equal constraint, no
+# constant); badge spans [cardRight, cardRight + 27] horizontally and
+# [cardBottom, cardBottom + 31] vertically outside the card; the 13pt gap
+# below the row is the normal gap, not overflow clearance.
 _green_fraction = _const(home, r"multiplier:([0-9.]+)", "green card width fraction")
 _row_gap = _const(home, r"statusRow\.spacing = ([0-9.]+)", "status row gap")
 _badge = _const(home, r"checkBadgeView\.widthAnchor constraintEqualToConstant:([0-9.]+)", "check badge size")
 _overflow_right = _const(home, r"checkBadgeView\.trailingAnchor constraintEqualToAnchor:status\.trailingAnchor constant:(-?[0-9.]+)", "badge right overflow")
 _overflow_down = _const(home, r"checkBadgeView\.bottomAnchor constraintEqualToAnchor:status\.bottomAnchor constant:(-?[0-9.]+)", "badge down overflow")
-_extra_height = _const(home, r"constraintEqualToAnchor:rightColumn\.heightAnchor constant:([0-9.]+)", "green card extra height")
 _gap_below = _const(home, r"setCustomSpacing:([0-9.]+) afterView:statusRow", "gap below the status row")
 if _badge != 110 or _overflow_right != 27 or _overflow_down != 31:
     raise AssertionError(f"badge geometry is not KSU's 110pt / +27 / +31: {_badge} / {_overflow_right} / {_overflow_down}")
-if _extra_height - (_badge - _overflow_down) <= 0:
-    raise AssertionError("badge intersects the white cards: green card must be taller than the right column by more than badge - down-overflow")
-if _gap_below - _overflow_down < 13:
-    raise AssertionError("badge intersects the info card: the gap below the status row must clear the down-overflow with room to spare")
+if _overflow_right <= 0 or _overflow_down <= 0:
+    raise AssertionError("badge frame does not extend past the card's bounds: nothing for the card to clip")
+if _green_fraction != 0.48:
+    raise AssertionError(f"green card width fraction is {_green_fraction}, expected 0.48 (measured KSU ~50/50 split)")
+if _gap_below != 13:
+    raise AssertionError(f"gap below the status row is {_gap_below}, expected 13")
 if _row_gap != 13:
     raise AssertionError(f"status row gap is {_row_gap}, expected 13")
 
@@ -211,11 +226,15 @@ require(home, '"iPhone18,2": @"iPhone 17 Pro Max"', "correct 18,2 mapping")
 require(home, '"iPhone18,3": @"iPhone 17"', "correct 18,3 mapping")
 forbid(home, '"iPhone18,1": @"iPhone 17"', "swapped 18,1 mapping (v2.2)")
 
-# --- App count after cleaning (v2.3 bug): the home count is the total
-# containers measured, not the rows left after dropping sub-64 KB apps.
-require(cache, "totalAppCount", "store keeps the total measured containers")
-require(cache, "totalApps:(NSUInteger)totalApps", "scanner reports the measured container count")
-require(cache, "ctx.totalContainers++", "every measured container is counted")
+# --- App count after cleaning (v2.3 bug, v2.4 fix): the home count is
+# DISTINCT APPS (Application containers only), not the rows left after
+# dropping sub-64 KB apps and not every container measured — v2.3 counted
+# PluginKitPlugin extension containers too and showed 1226.
+require(cache, "totalAppCount", "store keeps the total distinct apps")
+require(cache, "totalApps:(NSUInteger)totalApps", "scanner reports the measured app count")
+require(cache, "ctx.totalContainers++", "every measured container is counted (progress)")
+require(cache, "ctx.totalAppContainers++", "only Application containers count as apps")
+require(cache, "totalAppContainers", "scanner reports distinct apps, not containers")
 require(home, "store.totalAppCount", "home shows the measured total, not the row count")
 require(cleaner, "totalApps:totalApps", "cleaner passes the total through")
 
@@ -297,13 +316,64 @@ require(custom_vc, "开始清理", "run button")
 require(custom_vc, "添加规则", "add-rule flow")
 require(custom_vc, "添加排除", "add-exclude flow")
 require(cleaner, "自定义清理…", "custom cleaning entry in the clean page menu")
+# --- Custom cleaning (v2.4): finer rules + harder logic. Age filter (only
+# files older than N days), size filter (only larger than X / smaller than
+# Y), subfolder scope (only under Library/Caches/<name>), dry-run preview
+# (matched files + bytes, then confirm), whole-rule validation, and the
+# engine re-validates the container identity before every delete with
+# per-item accounting (freed / failed / skipped) and idempotent re-runs.
+require(custom, "CLCustomRuleMinAgeDaysKey", "age filter key")
+require(custom, "CLCustomRuleMinSizeKey", "min-size filter key")
+require(custom, "CLCustomRuleMaxSizeKey", "max-size filter key")
+require(custom, "CLCustomRuleSubfolderKey", "subfolder scope key")
+require(custom, "cl_custom_clean_make_rule_full", "rule constructor with filters")
+require(custom, "cl_custom_clean_validate_rule", "whole-rule validation")
+require(custom, "cl_custom_clean_dry_run", "dry-run preview")
+require(custom, "cl_custom_clean_run_one_rule", "single-rule run from the preview")
+require(custom, "cl_custom_clean_run_with_cancellation", "cancellable run")
+require(custom, "cl_clean_matching_files_filtered", "filtered match engine")
+require(cache, "CLCleanMatchOptions", "filter options struct")
+require(cache, "CLCleanMatchResult", "per-item accounting struct")
+require(custom_vc, "预览匹配", "rule preview action")
+require(custom_vc, "筛选（可选）", "filter fields in the add-rule flow")
+require(custom_vc, "清理这些文件", "dry-run confirm button")
+require(custom_vc, "跳过", "filters are optional")
 
-# --- iPhone Shortcuts (v2.3): cleaner://clean and cleaner://scan, handled
-# on-device, no server. App Intents are NOT implemented: an intent runs in
-# a separate extension process and the App Group sandbox grant lives in the
-# main app process, so a no-open clean would need a new extension target
-# and an unproven grant flow — the URL scheme is the honest scope.
-require(info, "CFBundleURLTypes", "URL scheme registered")
+# --- iPhone Shortcuts (v2.4): the App Intent lives in the MAIN APP
+# target, not in an extension. With openAppWhenRun = false, iOS
+# headless-launches the app process in the background (no scene) and runs
+# perform() in-process — the user taps the shortcut and the clean happens
+# in the background without opening the app, using the same sandbox grant,
+# measurement cache and custom rules as the app itself (no separate
+# extension process, no unproven grant flow). AppShortcutsProvider
+# pre-registers the shortcut, so it shows up in the Shortcuts app and can
+# be bound to the Action Button. The cleaner:// URL scheme stays as a
+# fallback (it opens the app + asks for confirmation).
+# The old NSExtension/PlugIns form is NOT used: modern App Intents
+# extensions are ExtensionKit (@main struct : AppIntentsExtension,
+# EXAppExtensionAttributes, Extensions/) — and no extension is needed
+# at all here.
+intents = read(ROOT / "Intents" / "CleanerIntents.swift")
+background = read(CORE / "CLBackgroundClean.m")
+require(intents, "struct CleanCacheIntent: AppIntent", "clean intent in the app target")
+require(intents, "static var openAppWhenRun: Bool = false", "intent does not open the app")
+require(intents, "CLBackgroundCleanRun(25.0)", "intent runs the background clean on a 25 s budget")
+require(intents, "struct CleanerShortcuts: AppShortcutsProvider", "pre-built shortcut provider")
+require(intents, "CLIntentsBootstrap", "keep-alive bootstrap for the linker")
+require(background, "CLBackgroundCleanRun", "background clean entry point")
+require(background, "CLCacheValidateItem", "background clean re-validates before purging")
+require(background, "cl_custom_clean_run", "background clean runs the enabled custom rules")
+require(build, "swiftc", "Swift intent compiled in build.sh")
+require(build, "-framework AppIntents", "AppIntents framework linked")
+require(build, "Intents/CleanerIntents.swift", "Swift intent source in the build")
+require(build, "Core/CLBackgroundClean.m", "background clean in the build")
+require(build, "CleanerIntents.o", "Swift object linked into the app binary")
+require(build, "CleanCacheIntent", "build validates the intent survives dead-strip")
+require(main, "[CLIntentsBootstrap keepAlive]", "main keeps the intent types linked")
+require(main, "CleanerIntents-Swift.h", "main imports the generated Swift header")
+forbid(build, "appex", "no app-extension target")
+forbid(build, "PlugIns", "no PlugIns directory: the intent is in the app binary")
+require(info, "CFBundleURLTypes", "URL scheme registered (fallback)")
 require(info, "<string>cleaner</string>", "cleaner:// scheme")
 require(main, "openURLContexts", "scene handles incoming URLs")
 require(main, "handleShortcutURL", "URL dispatch to the tab bar")
@@ -312,7 +382,9 @@ require(tabbar, 'isEqualToString:@"cleaner"', "cleaner:// scheme check")
 require(settings, "快捷指令", "shortcuts guide in Settings")
 require(settings, "cleaner://clean", "clean URL in Settings")
 require(settings, "cleaner://scan", "scan URL in Settings")
-require(settings, "无需服务器", "no-server note in Settings")
+require(settings, "不需要服务器", "no-server note in Settings")
+require(settings, "不打开应用", "background shortcut copy in Settings")
+require(settings, "清理全部缓存", "intent name in Settings")
 require(cleaner, "startShortcutAction", "cleaner page shortcut entry point")
 
 # --- Animations (v2.3, redone): scan batches insert with a fade, the
@@ -335,9 +407,10 @@ require(main, "cl_set_container_label_resolver", "container label resolver")
 require(main, "cl_set_container_list_provider", "container list provider")
 require(main, "cl_recover_interrupted_restore", "interrupted restore recovery")
 
-# --- Build: only the v2 sources, iPhone only, 0.2.3. ---
+# --- Build: only the v2 sources, iPhone only, 0.2.4. ---
 for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.m",
-               "Core/CLLaunchServices.m", "Core/CLCustomClean.m", "App/CLUI.m",
+               "Core/CLLaunchServices.m", "Core/CLCustomClean.m", "Core/CLBackgroundClean.m",
+               "App/CLUI.m",
                "App/CLCleanerViewController.m", "App/CLAppsViewController.m",
                "App/CLCustomCleanViewController.m", "App/CLAppActions.m",
                "App/CLAppDirectoryViewController.m", "App/CLHomeViewController.m",
@@ -346,8 +419,8 @@ for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.
     require(build, source, f"build source {source}")
 forbid(build, "WQCore.m", "v0.1 build source")
 require(build, "-Os -flto -dead_strip", "size optimisation flags")
-require(info, "<string>0.2.3</string>", "version 0.2.3")
-forbid(info, "<string>0.2.2</string>", "old version 0.2.2")
+require(info, "<string>0.2.4</string>", "version 0.2.4")
+forbid(info, "<string>0.2.3</string>", "old version 0.2.3")
 forbid(info, "CFBundleIcons~ipad", "iPad icon set")
 forbid(info, "UISupportedInterfaceOrientations~ipad", "iPad orientations")
 

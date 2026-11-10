@@ -58,6 +58,40 @@ BOOL cl_clean_matching_files(NSString *container, NSArray<NSString *> *_Nullable
                              unsigned long long *_Nullable freed, NSUInteger *_Nullable failed,
                              NSString *_Nullable *_Nullable reason);
 
+// Filtered variant (v2.4): age filter (only files older than minAgeSeconds),
+// size filter (minSize <= size <= maxSize, 0 = no bound), a subfolder scope
+// (roots: container-relative paths under Library/Caches or tmp; nil = both),
+// dry-run preview (count + sample, delete nothing) and cancellation.
+// The result reports per-item accounting: freed / failed / skipped
+// (pattern-matched but filtered out) / matched / matchedBytes, plus up to
+// 50 matched relative paths for the preview. The container identity is
+// re-checked before every delete; if it changes mid-walk the walk stops.
+typedef struct {
+    NSTimeInterval minAgeSeconds;
+    unsigned long long minSize;
+    unsigned long long maxSize;
+    NSArray<NSString *> *_Nullable roots;
+    BOOL dryRun;
+    CLScanCancellation *_Nullable cancellation;
+} CLCleanMatchOptions;
+
+typedef struct {
+    unsigned long long freed;
+    NSUInteger failed;
+    NSUInteger skipped;
+    NSUInteger matched;
+    unsigned long long matchedBytes;
+    NSArray<NSString *> *_Nullable samplePaths;
+    BOOL limited;
+} CLCleanMatchResult;
+
+BOOL cl_clean_matching_files_filtered(NSString *container, NSArray<NSString *> *_Nullable extensions,
+                                      NSArray<NSString *> *_Nullable nameSubstrings,
+                                      NSArray<NSString *> *_Nullable excludedRelativePaths,
+                                      const CLCleanMatchOptions *_Nullable options,
+                                      CLCleanMatchResult *_Nullable resultOut,
+                                      NSString *_Nullable *_Nullable reason);
+
 // fd-relative removal shared with CLGrant's copy_contents (same-file staging).
 // *freed is optional (callers cleaning a partial stage pass NULL).
 BOOL cl_remove_entry(int parent, NSString *name, NSString *path, unsigned long long *_Nullable freed,
@@ -114,10 +148,12 @@ extern NSString *const CLCacheStoreDidUpdateNotification;
 @property (nonatomic, copy, readonly) NSArray<CLCacheItem *> *items;
 @property (nonatomic, readonly) unsigned long long totalBytes;
 @property (nonatomic, readonly) NSUInteger appCount;
-// Total containers measured in the last scan (v2.3). Unlike appCount, this
-// does not drop apps whose cache is under 64KB — so after a clean, when
-// every app is ~0 bytes and appCount falls to 0, the home still shows the
-// real app total (114). See docs/GITHUB-RESEARCH-v2.3.md §5 / REFACTOR-v2 §10.
+// Total DISTINCT APPS measured in the last scan (v2.4: Application
+// containers only — PluginKitPlugin extension containers are excluded).
+// Unlike appCount, this does not drop apps whose cache is under 64KB —
+// so after a clean, when every app is ~0 bytes and appCount falls to 0,
+// the home still shows the real app total (114). v2.3 counted every
+// container and showed 1226. See REFACTOR-v2 §11.
 @property (nonatomic, readonly) NSUInteger totalAppCount;
 @property (nonatomic, readonly) BOOL limited;
 @property (nonatomic, readonly) NSTimeInterval lastScanFinished;

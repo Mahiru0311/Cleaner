@@ -83,24 +83,34 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 # cannot delete a flow that ends in a UIKit label. keepAlive is kept as
 # a belt-and-braces call, but it is NOT the protection. validate_app
 # below now checks the mangled symbols, not the bare names.
-# NOTE (v2.5, run 42823044882): the first v2.5 build STILL lost the types
-# even with that data flow — swiftc -O constant-folded it (appShortcuts is
-# a literal 1-element array, the title is a constant), so the references
-# never reached the object file. Two fixes: CLCleanerShortcutsInfo's methods
-# carry @_optimize(none) so the references survive swiftc, and the link no
-# longer uses -dead_strip at all (below) — it is the mechanism that removed
-# the types at link time, and the size it saves is not worth a shortcut the
-# Shortcuts app cannot see. -Os -flto stay. If the IPA grows past the 250KB
-# target, revisit — but do NOT re-add -dead_strip without re-verifying the
-# mangled symbols in the built binary.
-xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -O -swift-version 5 \
+# NOTE (v2.5, runs 42823044882 / 42824508382 / 42825022774): the first
+# v2.5 builds STILL lost the types. What did NOT work, in order:
+# (1) the real data flow (guide reads appShortcuts) — swiftc -O
+# constant-folded it (appShortcuts is a literal 1-element array, the
+# title is a constant), so the references never reached the object file;
+# (2) @_optimize(none) on CLCleanerShortcutsInfo's computed properties
+# plus explicit `_ = CleanerShortcuts.self` metatype references — the
+# pre-strip check then PASSED CleanCacheIntent but STILL failed
+# CleanerShortcuts. CleanerShortcuts is never instantiated (only its
+# static property is read), so its metadata is not needed by the code,
+# and the attribute is a function-level one that may not apply to a
+# property getter at all; -flto then re-optimizes across modules at link
+# time and can delete what swiftc kept. So the fix is at the flag level,
+# not the code level: swiftc compiles the intent file with -Onone (no
+# Swift optimisation at all — the file is tiny, performance is
+# irrelevant), and the link drops -flto (keeps -Os for the ObjC compile).
+# -dead_strip stays removed. Do NOT re-add -O for swiftc, -flto, or
+# -dead_strip without re-verifying the mangled symbols in the built
+# binary. If the IPA grows past the 250KB target, revisit — but a
+# shortcut the Shortcuts app cannot see is worse than a few KB.
+xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -Onone -swift-version 5 \
     -parse-as-library -module-name CleanerIntents \
     -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
     -emit-objc-header-path "$OUT/CleanerIntents-Swift.h" \
     -I Core -c Intents/CleanerIntents.swift -o "$OUT/CleanerIntents.o"
 xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/ModuleCache" -arch arm64 \
     -miphoneos-version-min="$MINIMUM_IOS_VERSION" \
-    -isysroot "$SDK" -I Core -I App -I "$OUT" -Wall -Wextra -Werror -Os -flto \
+    -isysroot "$SDK" -I Core -I App -I "$OUT" -Wall -Wextra -Werror -Os \
     -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers \
     -framework AppIntents \
     Core/CLGrant.m Core/CLScan.m Core/CLCache.m Core/CLApp.m Core/CLLaunchServices.m Core/CLCustomClean.m \

@@ -376,9 +376,13 @@ require(build, "CleanerIntents.o", "Swift object linked into the app binary")
 # ZERO appShortcuts, and the Shortcuts app found nothing. The real
 # checks: build.sh greps the binary for the Swift-mangled symbols
 # ($s…V) and the appShortcuts witness, and the guide page reads the
-# registered shortcuts through CLCleanerShortcutsInfo — a real data flow
-# the optimizer cannot delete (keepAlive alone could not: it only
-# referenced the type metadata, which -O + LTO threw away).
+# registered shortcuts through CLCleanerShortcutsInfo. What keeps the
+# types linked is the FLAG level, not the data flow: the guide's data
+# flow was constant-folded by swiftc -O (run 42823044882), and
+# @_optimize(none) on the computed properties plus explicit metatype
+# references still lost CleanerShortcuts (runs 42824508382 /
+# 42825022774) — so swiftc now uses -Onone and the link drops -flto.
+require(build, "-Onone", "swiftc compiles the intent file without optimisation")
 require(build, "[$]s[0-9]+CleanerIntents[0-9]+CleanCacheIntentV", "build checks the mangled CleanCacheIntent symbol")
 require(build, "[$]s[0-9]+CleanerIntents[0-9]+CleanerShortcutsV", "build checks the mangled CleanerShortcuts symbol")
 require(build, "appShortcuts", "build checks the appShortcuts witness in the binary")
@@ -495,12 +499,13 @@ for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.
                "App/CLTabBarController.m", "App/main.m"):
     require(build, source, f"build source {source}")
 forbid(build, "WQCore.m", "v0.1 build source")
-require(build, "-Os -flto", "size optimisation flags")
-# v2.5: -dead_strip is GONE from the link on purpose — it is the mechanism
-# that removed the intent types at link time in v2.4 (and the first v2.5
-# build still lost them until @_optimize(none) + no -dead_strip). Do not
-# re-add it without re-verifying the mangled symbols in the built binary.
-forbid(build, "-Os -flto -dead_strip", "dead-strip removed from the link")
+# v2.5: the link keeps -Os (ObjC compile) but drops -flto and
+# -dead_strip on purpose. -flto re-optimizes across modules at link time
+# and deleted the intent types (runs 42824508382 / 42825022774); swiftc
+# uses -Onone for the intent file. Do not re-add -flto or -dead_strip
+# without re-verifying the mangled symbols in the built binary.
+forbid(build, "-Os -flto", "-flto removed from the link")
+forbid(build, "-Os -dead_strip", "dead-strip removed from the link")
 # v2.5: the strict check in run_all_tests.sh has its OWN source list — a
 # file in build.sh but not there links fine in build.sh and then fails the
 # preflight link with undefined symbols (CLRulePickerViewController /

@@ -57,7 +57,12 @@ trap cleanup EXIT
 APP="$OUT/Payload/Cleaner.app"
 mkdir -p "$APP"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-XCODE_VERSION=$(xcodebuild -version | awk '/^Xcode /{print $2; exit}') || \
+# xcodebuild prints two lines ("Xcode 26.6" / "Build version ..."): sed
+# reads ALL of it — an awk '{print; exit}' here would close the pipe
+# while xcodebuild is still writing and SIGPIPE would fail the build
+# (run 42853617384 failed on exactly that race, only in the first test
+# that ran build.sh — cold-start xcodebuild is the slow one).
+XCODE_VERSION=$(xcodebuild -version | sed -n 's/^Xcode //p') || \
     fail "cannot determine the Xcode version (xcodebuild -version)"
 [[ -n "$XCODE_VERSION" ]] || fail "cannot determine the Xcode version (xcodebuild -version)"
 # App Intents metadata input lists (v2.7): the processor takes the source

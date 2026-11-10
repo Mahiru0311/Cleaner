@@ -110,6 +110,34 @@ xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/Modul
     App/CLHomeViewController.m App/CLSettingsViewController.m App/CLLogViewController.m \
     App/CLRulePickerViewController.m App/CLShortcutsGuideViewController.m \
     App/CLTabBarController.m App/main.m "$OUT/CleanerIntents.o" -o "$APP/Cleaner"
+# App Intent check — BEFORE strip (v2.5, run 42823793730 lesson). The
+# mangled-symbol check MUST run here, on the just-linked binary, not in
+# validate_app: `strip -x` below removes essentially all local symbols
+# (the v2.4 binary's symbol table has 415 global symbols and 1 local),
+# and Swift struct metadata symbols are local — strip deletes them even
+# when the types are present and working. Only @objc class symbols
+# (CLIntentsBootstrap) survive strip, which is why the v2.4 binary showed
+# those 8 and nothing else. So a post-strip symbol grep measures strip,
+# not the types: it failed the first v2.5 build that had the types in the
+# code. Here, pre-strip, the symbols are intact: the mangled symbols
+# ([$]s…V) and the appShortcuts witness prove the types really made it
+# into the linked binary. The length digits are matched loosely ([0-9]+)
+# so the check does not depend on counting the identifier length by hand:
+# "CleanerShortcuts" is 16 characters (Cleaner 7 + Shortcuts 9), and the
+# v2.4 binary's surviving $s14CleanerIntents18CLIntentsBootstrapC (18
+# chars) confirms the length-prefix rule — an earlier note wrote 17 for
+# CleanerShortcuts, which is a miscount; either way the regex matches,
+# and the real emitted symbol is confirmed when the built IPA is verified.
+# Bare names are NOT checked here: the v2.4 binary still contained the
+# plain strings "CleanCacheIntent" and "CleanerShortcuts" (1 each) while
+# the types themselves were gone — grepping a bare name passed on a binary
+# with no intent in it, and the Shortcuts app found nothing.
+grep -aE -q '[$]s[0-9]+CleanerIntents[0-9]+CleanCacheIntentV' "$APP/Cleaner" || \
+    fail "linked binary is missing the CleanCacheIntent type (no mangled symbol — the Swift optimizer may have removed it)"
+grep -aE -q '[$]s[0-9]+CleanerIntents[0-9]+CleanerShortcutsV' "$APP/Cleaner" || \
+    fail "linked binary is missing the CleanerShortcuts provider (no mangled symbol — the Swift optimizer may have removed it)"
+grep -a -q "appShortcuts" "$APP/Cleaner" || \
+    fail "linked binary has no appShortcuts witness"
 xcrun --sdk iphoneos strip -x "$APP/Cleaner"
 cp Info.plist "$APP/Info.plist"
 cp icons/AppIcon*@*.png "$APP/"
@@ -134,29 +162,14 @@ validate_app() {
         fail "unable to inspect signed entitlements"
     [[ "$signed_entitlements" == *"$APP_GROUP"* ]] || \
         fail "signed app is missing required App Group $APP_GROUP"
-    # App Intent (v2.5): the binary must link AppIntents and still carry
-    # the intent TYPES after -dead_strip. v2.4 proved that grepping the
-    # bare names is NOT a check: the v2.4 binary still contained the plain
-    # strings "CleanCacheIntent" and "CleanerShortcuts" (1 each) while the
-    # types themselves were gone — so `grep -a -q "CleanCacheIntent"`
-    # PASSED on a binary with no intent in it, and the Shortcuts app found
-    # nothing. Only a Swift-mangled symbol ([$]s…V) or the appShortcuts
-    # witness proves the type is really linked. The length digits are
-    # matched loosely ([0-9]+) so the check does not depend on counting the
-    # identifier length by hand: "CleanerShortcuts" is 16 characters
-    # (Cleaner 7 + Shortcuts 9), and the v2.4 binary's surviving
-    # $s14CleanerIntents18CLIntentsBootstrapC (18 chars) confirms the
-    # length-prefix rule — an earlier note wrote 17 for CleanerShortcuts,
-    # which is a miscount; either way the regex matches, and the real
-    # emitted symbol is confirmed when the built IPA is verified.
+    # App Intent (v2.5): the binary must link AppIntents. The intent TYPES
+    # themselves are verified BEFORE strip (right after the link above),
+    # not here: `strip -x` removes the local symbols, and Swift struct
+    # metadata symbols are local — a post-strip symbol grep measures strip,
+    # not the types (it failed a build that had the types in the code).
+    # Only the AppIntents link is checked here, on the final binary.
     otool -L "$app_path/Cleaner" | grep -q "AppIntents" || \
         fail "app binary does not link AppIntents"
-    grep -aE -q '[$]s[0-9]+CleanerIntents[0-9]+CleanCacheIntentV' "$app_path/Cleaner" || \
-        fail "app binary is missing the CleanCacheIntent type (no mangled symbol — dead-strip may have removed it)"
-    grep -aE -q '[$]s[0-9]+CleanerIntents[0-9]+CleanerShortcutsV' "$app_path/Cleaner" || \
-        fail "app binary is missing the CleanerShortcuts provider (no mangled symbol — dead-strip may have removed it)"
-    grep -a -q "appShortcuts" "$app_path/Cleaner" || \
-        fail "app binary has no appShortcuts witness"
 }
 
 # Package to a same-directory temporary sibling, then validate the actual ZIP

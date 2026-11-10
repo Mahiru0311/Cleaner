@@ -382,6 +382,11 @@ require(build, "CleanerIntents.o", "Swift object linked into the app binary")
 require(build, "[$]s[0-9]+CleanerIntents[0-9]+CleanCacheIntentV", "build checks the mangled CleanCacheIntent symbol")
 require(build, "[$]s[0-9]+CleanerIntents[0-9]+CleanerShortcutsV", "build checks the mangled CleanerShortcuts symbol")
 require(build, "appShortcuts", "build checks the appShortcuts witness in the binary")
+# The symbol check must run BEFORE strip: strip -x removes the local
+# symbols (v2.4 binary: 415 global, 1 local), so a post-strip symbol grep
+# measures strip, not the types — it failed a build that had the types.
+if not (build.index("CleanCacheIntentV") < build.index('strip -x "$APP/Cleaner"')):
+    raise AssertionError("intent symbol check must come before strip -x")
 forbid(build, 'grep -a -q "CleanCacheIntent" "$app_path/Cleaner"', "bare-name grep is gone (it passed on the broken v2.4 binary)")
 forbid(build, 'grep -a -q "CleanerShortcuts" "$app_path/Cleaner"', "bare-name grep is gone (it passed on the broken v2.4 binary)")
 forbid(build, "# no -dead_strip risk here — main.m references CLIntentsBootstrap, which references the intent types.", "the wrong dead-strip comment is gone")

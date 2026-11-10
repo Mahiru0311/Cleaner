@@ -142,6 +142,15 @@ xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/Modul
 # plain strings "CleanCacheIntent" and "CleanerShortcuts" (1 each) while
 # the types themselves were gone — grepping a bare name passed on a binary
 # with no intent in it, and the Shortcuts app found nothing.
+# DIAGNOSTIC (v2.5, run 42825431199): the pre-strip check still fails
+# on CleanerShortcuts even with swiftc -Onone and no -flto, so the
+# "optimizer removed it" theory is dead — the symbol may never be
+# emitted, or under a different name. Dump every CleanerIntents mangled
+# symbol in the linked binary to the log so the next fix is based on
+# what is actually there, not on a theory. Remove once resolved.
+echo "--- CleanerIntents symbols in linked binary ---"
+grep -a -o '[$]s[0-9]*CleanerIntents[A-Za-z0-9_]*' "$APP/Cleaner" | sort -u || true
+echo "--- end CleanerIntents symbols ---"
 grep -aE -q '[$]s[0-9]+CleanerIntents[0-9]+CleanCacheIntentV' "$APP/Cleaner" || \
     fail "linked binary is missing the CleanCacheIntent type (no mangled symbol — the Swift optimizer may have removed it)"
 grep -aE -q '[$]s[0-9]+CleanerIntents[0-9]+CleanerShortcutsV' "$APP/Cleaner" || \

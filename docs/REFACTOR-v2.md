@@ -704,3 +704,39 @@ iPhone 17 / iOS 27.0 上装 0.2.3 后看截图确认。另：设备型号行会�
 macOS runner 上 16 个 unittest 应全过（有 plutil），另有 ObjC 套件（含新增
 `CLCustomCleanTests`：规则校验、年龄/大小/子目录筛选、试运行数学与实际一致、幂等重跑、
 中断安全（预取消 + 中途取消 2000 文件）、试运行预览 + 单条执行）。
+
+构建四轮才成（都在 `refactor/v2`，tree SHA 逐字节一致，`main` 未动）：
+- 第一轮：本地 872ce4d → 远程 2bf752e4；Actions run **42814558876**，completed/**failure**——
+  预检 `CLCustomCleanTests` 挂在「subfolder outside Caches/tmp refused」：测试用裸名 `Documents`，
+  按裸名规则它合法地映射到 `Library/Caches/Documents`，测试期望错了。修法：拒绝用例改用
+  `Documents/foo`（带斜杠的真路径才在 Caches/tmp 之外），并把裸名映射抽成共用的
+  `cl_custom_clean_resolve_subfolder`（裸名 = Library/Caches 下的子目录，但裸名 `tmp` 本身指 tmp 目录，
+  不是 Library/Caches/tmp——否则会静默匹配不到）；另按苹果短语规范把 AppShortcut 短语改成含应用名
+  （「用 Cleaner 清理全部缓存」「在 Cleaner 里清理缓存」）。本地 9c6152a → 远程 931dd8fd。
+- 第二轮：run **42815224533**，completed/**failure**——ObjC 套件全过，卡在 Python
+  `test_build` 两用例：假 xcrun 只认 clang/strip，新增的 swiftc 调用落到 `exit 2`（无 stderr）。
+  修法：假 xcrun 加 swiftc 分支（写桩对象文件），假 clang 桩里带上
+  `CleanCacheIntent` / `CleanerShortcuts` 标记，新增假 otool（`-L` 报 AppIntents 链接），
+  这样 validate_app 的 v2.4 新检查在假环境里也被实际执行。本地 d32608a → 远程 60a7ea6e。
+- 第三轮：run **42815734144**，completed/**failure**——Python 16 全过，iOS 严格链接检查挂：
+  `duplicate symbol '_main'`（fixtures/main-770210.o 与 CleanerIntents.o）。根因：swiftc 单文件默认按脚本
+  模式编译，会合成一个 `_main` 入口，与 App/main.m 冲突（真构建也会撞上同一问题——检查立了功）。
+  修法：build.sh 与 run_all_tests.sh 的 swiftc 调用都加 `-parse-as-library`（该文件是库代码，
+  main 只在 App/main.m）。本地 94aadf4 → 远程 b47bb1bb。
+- 第四轮：Actions run **42816187498**，completed/**success**，一次过。
+  **最终 IPA**：`~/workspace/downloads/cleaner-v2-4-ipa/Cleaner.ipa`，**182,299 字节**
+  （目标 <250KB ✓；比 v2.3 的 163,268 大 19,031——Swift 运行时 + intent 代码），
+  SHA-256 **79358a52e3722954d1a02bf21a0536a0d4155158b1981feb89840edd9211cd3e**，
+  主二进制 **464,624 字节**（目标 <500KB ✓；比 v2.3 的 432,448 大），
+  Mach-O 64-bit arm64，Info.plist Cleaner / com.mahiru.cleaner / 0.2.4 / build 1 /
+  MinimumOS 26.0 / zh_CN / 仅 iPhone（UIDeviceFamily [1]，仅竖屏）。
+  二进制含 `CleanCacheIntent` / `CleanerShortcuts` / `group.com.mahiru.cleaner` /
+  `cleaner://`；URL scheme `cleaner://` 已注册；中文串在（ObjC 的 NSString 字面量是 UTF-16LE，
+  如 可清理 / 快捷指令 / 在后台清理；Swift 的 intent 文案是 UTF-8，如 清理全部缓存）；
+  App Group 由 build.sh 的 validate_app 在构建时用 codesign -d 验过；**无 PlugIns 目录、无 .appex**——
+  intent 在主应用二进制内，符合设计（不是扩展 target）。
+  已发给用户（ad-hoc 签名——重签时保留 App Group）。
+  真机验证仍未做：首页比例与裁剪后的对勾（绿卡是否还像板子、圆环是否被卡片齐齐切断）、
+  应用数是否显示 114 且清理后仍是 114、快捷指令里能否看到「清理全部缓存」、点一下是否不打开应用
+  就在后台清理并返回释放量（25 秒够不够一次清完）、规则筛选与试运行预览、引擎加固——
+  都须用户在 iPhone 17 / iOS 27.0 上装 0.2.4 后截图 + 快捷指令实测确认。

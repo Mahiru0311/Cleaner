@@ -407,6 +407,28 @@ iPhone 17 Pro Max / iOS 27.0 上看截图确认。
 `python3 -m unittest discover -s tests -p 'test_*.py'` 16 个，2 个失败与
 v2.0/v2.1 相同（`test_build` 两用例缺 `plutil`，Linux 固有）；`bash -n build.sh`
 及各 runner 通过；`/tmp/v2_check.py` 结构/符号/导入/重复行检查通过。
+macOS runner 上 16 个 unittest 全过（有 plutil）。
+
+构建第一轮失败：Actions run 42803714335，completed/failure。`UIAction`
+没有 `actionWithTitle:image:attributes:handler:`，iOS 语法检查在
+`CLAppDirectoryViewController.m` 两处清空动作都报错。修在 commit
+5b5bd5a：改用 `actionWithTitle:image:identifier:handler:`，事后设
+`.attributes = UIMenuElementAttributesDestructive`；顺手把两处重复的
+清空动作合并成一个。
+
+构建第二轮成功：Actions run **42803963489**，completed/success（Xcode 26.6 /
+iOS SDK 26.5）。本地 d0316ac（v2.2）+ 5b5bd5a（UIAction 修复）→ 远程
+ed13b65 → 140f7977，`refactor/v2`，两次推送 tree SHA 与本地逐字节一致。
+IPA：`~/workspace/downloads/cleaner-v2-2-ipa/Cleaner.ipa`，**145,122 字节**
+（目标 <250KB ✓），主二进制 **382,176 字节**（目标 <500KB ✓；比 v2.1
+的 348,912 大——目录浏览器 + 扫描缓存），SHA-256
+**6f2f663df7dafbac13aa7104ce7e9928cfc07671f4a7c8ab196015473c439e0c**，
+Mach-O 64-bit arm64，Info.plist Cleaner / com.mahiru.cleaner / 0.2.2 /
+build 1 / MinimumOS 26.0 / zh_CN / 仅 iPhone（UIDeviceFamily [1]）。
+二进制含中文串（UTF-16LE，如 不保留备份 / 丢弃后无法恢复）；
+App Group `group.com.mahiru.cleaner` 在 entitlements.plist，build.sh
+PlistBuddy 检查 OK，签名用了 `--entitlements entitlements.plist`。
+已发给用户（ad-hoc 签名——重签时保留 App Group）。
 真机验证仍未做：对勾圆圈位置、电源键已删、扫描到底快几秒、图标观感
 （多少行是真图标）、目录钻取与目录内备份/恢复/清空——都须用户在
 iPhone 17 Pro Max / iOS 27.0 上装 0.2.2 后看截图确认。

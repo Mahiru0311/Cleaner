@@ -803,24 +803,31 @@ worse_query 上）的钻取界面；iOS 系统文件选择器够不到别的 App
 YangJiiii/3105（fd 遍历）、WQFiles-CN（简中本地化参考）。不搬：各 fork 白拷贝、
 worsefiles-ios（太新）、3105 取容器方式、越狱/TrollStore 专属逻辑。
 
-1. **快捷指令根因与修复（本版核心，见 §11 更正）。** 20:46 截图排除了「没装新版 /
-   没打开过」；v2.4 二进制验实：意图类型被 -Os -flto -dead_strip 优化掉了（裸名字符串
-   各剩 1 个，混淆符号 0 次，appShortcuts 0 次，只剩 CLIntentsBootstrap 的符号）。
-   keepAlive 只写 `_ = X.self`，拦不住 -dead_strip；build.sh 的裸名 grep 在这个坏包上
-   能通过，等于没查。修法三件套，缺一不可：
-   (a) 真实数据流：`CLCleanerShortcutsInfo`（Swift）直接读
-   `CleanerShortcuts.appShortcuts`，设置里的指引页把标题显示出来——数据流一路到 UIKit
-   标签，优化器删不掉；keepAlive 保留，但不再是保护。
-   (b) validate_app 改成真检查：二进制里 grep 混淆符号正则
-   `[$]s[0-9]+CleanerIntents[0-9]+CleanCacheIntentV` /
-   `[$]s[0-9]+CleanerIntents[0-9]+CleanerShortcutsV` + `appShortcuts`，缺一个构建失败；
-   裸名 grep 删掉，build.sh:71 的错注释改掉（长度数写长度不敏感的正则：CleanerShortcuts
-   是 16 个字符，一份早期记录写 17 是数错了——真正发出的符号在验包时从二进制里确认）。
-   (c) 两处假测试桩改成真检查：`tests/test_build.py` 的假 clang 桩真的产出混淆符号 +
-   appShortcuts + AppIntents 标记，`FAKE_DROP_INTENT=1` 模拟 v2.4 的包（裸名在、符号不
-   在）时构建必须失败（新增 `test_stripped_intent_fails_the_build`）；假 otool 改成读
-   二进制再报 AppIntents 链接。`browser_ui_regressions.py:371` 的假检查换成真断言
-   （build.sh 里的混淆符号正则、appShortcuts、数据流、指引页、选择器、去重计数、模式行、0.2.5）。
+1. **快捷指令根因与修复（本版核心，见 §11 更正——再更正一次）。** 20:46 截图排除了
+   「没装新版 / 没打开过」。v2.5 前后 11 次构建，5 次（42823044882 / 42824508382 /
+   42825022774 / 42825431199 / 42825889428）都卡在同一点：构建检查说二进制里没有
+   CleanerShortcuts。先后试了真实数据流、@_optimize(none)、显式元类型引用、swiftc
+   -Onone、去掉 -flto——全都没用。**真正的根因在 run 42825889428 的诊断转储里：
+   类型从来没丢，是检查的 grep 写错了。** Swift 的混淆名会做词替换（word
+   substitution）：模块名是 CleanerIntents（词：Cleaner、Intents），所以
+   "CleanerShortcuts" 发出的符号是 `$s14CleanerIntents0A9ShortcutsV`（"Cleaner"
+   变成替换 0A，只拼出 "Shortcuts"），"appShortcuts" 是 `03appC0`——字面串
+   "CleanerShortcutsV" 和 "appShortcuts" 在任何二进制里都不会出现。旧检查 grep
+   这些字面串，注定失败；"CleanCacheIntent" 能过只是因为 "Clean" 不是 "Cleaner"
+   这个词，不触发替换。v2.4 的「-dead_strip 优化掉了意图」结论同样不成立：它也
+   是靠字面名 grep + 一个已被 strip -x 抽掉本地符号的符号表得出的，测不到东西。
+   v2.4 真机搜不到的真正原因仍未定（可能是当时装的还是 v2.3、或系统索引延迟），
+   只能等用户在 0.2.5 上亲测。修法：构建检查改成在链接后、strip 前 grep 真正发出
+   的混淆符号 `$s14CleanerIntents16CleanCacheIntentV` /
+   `$s14CleanerIntents0A9ShortcutsV` / `0A9ShortcutsV03appC0`（三者缺一构建失败）；
+   -Onone / 去 -flto / @_optimize(none) / 元类型引用都留着（无害，去掉了变量），
+   但它们不是修法。假测试桩同步改：`tests/test_build.py` 的假 clang 桩产出真正的
+   替换后符号，`FAKE_DROP_INTENT=1`（只有裸名）时构建必须失败（新增
+   `test_stripped_intent_fails_the_build`）；假 otool 改成读二进制再报 AppIntents
+   链接；`browser_ui_regressions.py` 的假检查换成真断言（替换后符号、数据流、指引页、
+   选择器、去重计数、模式行、0.2.5），并断言检查在 strip 之前。早期记录里
+   "CleanerShortcuts 是 16 个字符 / 17 是数错了"的争论是白争——真正发出的符号根本
+   不拼全名，长度数不适用。
    指引页（新文件 `App/CLShortcutsGuideViewController.*`，设置 → 快捷指令）：先讲前置
    条件（装 0.2.5 → 打开一次 Cleaner → 系统索引之后再去搜「清理全部缓存」；搜不到先重启
    手机再试），带 live 状态（当前版本带不带意图——运行时读 `shortcutTitles`，即真实的注册
@@ -869,7 +876,24 @@ grep 在 v2.4 式包上能通过，新混淆符号 + appShortcuts 检查在同�
 未开仍拒绝、plist 往返——保存/重载/展示/同 UUID 编辑/停用/删除）只能在 macOS runner 上跑，
 本地无 Apple SDK，待 Actions 验证。
 
-构建（待填：Actions run、IPA 大小/SHA/路径、混淆符号实测）。
+构建：Actions run 42826597761（head 2d4c5db），v2.5 的第 12 次构建，第一次成功；
+前 11 次失败：1 次测试错（CLCustomCleanTests.m:430）、1 次 shortTitle 成员不存在、
+1 次 strict 检查缺源文件、1 次 -Werror（废弃 API + __autoreleasing 传 ivar 地址）、
+7 次意图检查——其中 4 次是词替换 grep 写错、2 次是 strip 后查符号、1 次是假 clang 桩
+写旧符号。IPA
+`~/workspace/downloads/cleaner-v2-5-ipa/Cleaner.ipa`，207,621 字节（< 250KB 目标），
+SHA-256 `976fa0d42c0435282fd20716da4e6818314a11ce11dbd20d19c4b7c0b730e5cb`。
+亲验：Mach-O 64-bit arm64；Info.plist Cleaner / com.mahiru.cleaner / 0.2.5 / build 1 /
+MinimumOS 26.0 / zh_CN / iPhone only（UIDeviceFamily [1]）/ Portrait；cleaner:// scheme；
+App Group group.com.mahiru.cleaner 在二进制里 3 次；中文串在（Swift 串 UTF-8，
+ObjC 界面串 UTF-16LE：「快捷指令」17 次、「扫描」29 次、「选择」11 次、「添加规则」4 次、
+「清理全部缓存」2 次）；无 .appex；意图在：链接后 strip 前的检查通过（真实混淆符号
+`$s14CleanerIntents16CleanCacheIntentV` / `$s14CleanerIntents0A9ShortcutsV` /
+`0A9ShortcutsV03appC0`），strip 后的成品二进制里 Swift 元数据段全在（__swift5_types /
+__swift5_proto / __swift5_typeref），裸名 CleanerShortcuts 4 次、CleanCacheIntent 1 次。
+注意：主二进制 544,304 字节，超了 <500KB 的二进制目标（v2.4 是 464,624）——-Onone +
+去 -flto + 新的选择器/指引页代码；IPA 仍在目标内。以后若在意大小，可重开 -O/-flto（现
+在检查用的是真正发出的符号，优化开回来也不会再误报），但须重验。
 真机验证仍未做：选择器流程（选目录 → 选择 → 规则出现并进真清理）、规则进后台快捷指令清理、
 快捷指令在装 0.2.5 + 打开一次后出现并点一下后台清完不打开应用、指引页 live 状态、应用数 114
 （清理后仍 114）、模式行不断词、规则筛选 + 试运行预览——都须用户在 iPhone 17 / iOS 27.0 上确认。

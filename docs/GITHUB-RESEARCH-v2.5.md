@@ -75,47 +75,50 @@ iOS 的 UIDocumentPickerViewController 只能进「文件」App 能看到的位�
 我们的目标目录。**应用内钻取是唯一路线**：选应用 → 进容器逐级点文件夹（Filza
 式），或粘贴路径。这不是偷懒，是沙盒决定的。
 
-## 4. 快捷指令找得到：包里根本没有意图（-dead_strip 根因，20:46 验实）
+## 4. 快捷指令找得到：检查写错了，不是包里没意图（词替换，run 42825889428 验实）
 
 用户 2026-11-10 20:44 真机证据：在「快捷指令」App 里搜 cleaner，一个结果都
 没有。20:46 第二张截图排除了最先的两个猜测：手机上确实是 v0.2.4 (1)，而且
 已经打开过——「还装着 v2.3」「装了但没打开过，系统没索引」都不成立，是真 bug。
 
-**根因（在已验证的 v2.4 IPA 二进制上查的，SHA-256
-79358a52e3722954d1a02bf21a0536a0d4155158b1981feb89840edd9211cd3e，主二进制
-464,624 字节）：构建时把意图代码优化掉了，包里根本没有它。**
-`CleanCacheIntent` 和 `CleanerShortcuts` 在二进制里各只剩 1 个裸名字符串；
-混淆符号 `$s14CleanerIntents16CleanCacheIntentV`、`$s14CleanerIntents17CleanerShortcutsV`
-出现 0 次，`appShortcuts` 也是 0 次；只剩 `CLIntentsBootstrap` 的符号。
-机制：build.sh 链接用了 `-Os -flto -dead_strip`，而 keepAlive 只写了
-`_ = CleanCacheIntent.self` / `_ = CleanerShortcuts.self`——在 -O + LTO 下
-优化器把没副作用的元数据引用直接消掉，-dead_strip 再把类型和协议一致性整个
-删掉。build.sh:71 的注释「no -dead_strip risk here」是错的。
+**更正（本节原先写的「-dead_strip 根因」是错的）：** 原先的根因结论靠两处证据，
+两处都测不到东西：(1) 在 v2.4 二进制上 grep 字面混淆名
+`$s14CleanerIntents16CleanCacheIntentV` / `$s14CleanerIntents17CleanerShortcutsV`
+和 `appShortcuts`，全是 0 次——但 Swift 的混淆名会做词替换（word substitution），
+这些字面串在任何二进制里都不会出现；(2) 一个已被 `strip -x` 抽掉本地符号的符号
+表（415 个全局符号、1 个本地），Swift 结构体的元数据符号是本地的，strip 本来就
+会删掉它们。v2.5 的诊断转储（run 42825889428，把链接后二进制里全部
+CleanerIntents 符号打到日志里）证明了这一点：类型一直在包里，真正的符号是
+`$s14CleanerIntents16CleanCacheIntentV`（拼全名）和
+`$s14CleanerIntents0A9ShortcutsV`（"Cleaner" → 替换 0A，只拼 "Shortcuts"），
+appShortcuts 的访问器是 `0A9ShortcutsV03appC0`。v2.4 真机搜不到的真正原因仍未定
+（可能是当时装的还是 v2.3、或系统索引延迟），只能等用户在 0.2.5 上亲测。
+v2.5 为此连错了 5 次构建检查才找到这里——教训：**先打转储看二进制里到底有什
+么，再写检查；不要先编一个机制（优化器删类型），再按机制写检查。**
 
-**关键陷阱：build.sh:117-120 那句 `grep -a -q "CleanCacheIntent"` 在这个包上
-是能通过的，因为裸名字符串还在。所以只把检查改成“查二进制”不够，必须查混
-淆符号，查裸名字等于没查。** 同样的假检查还有两处：`tests/browser_ui_regressions.py:371`
-（只是在 build.sh 文本里 grep "CleanCacheIntent"）和 `tests/test_build.py:42`
-（假 otool 只打印标记，不读二进制）。三处都要改成真检查（见 §5 决定）。
+**关键陷阱（仍然成立，但原因不同）：build.sh 里 `grep -a -q "CleanCacheIntent"`
+这种裸名 grep 在坏包上也能通过，因为裸名字符串还在——查裸名等于没查。** 同样的
+假检查还有两处：`tests/browser_ui_regressions.py:371`（只是在 build.sh 文本里
+grep "CleanCacheIntent"）和 `tests/test_build.py:42`（假 otool 只打印标记，不读二
+进制）。三处都要改成真检查（见 §5 决定），而且真检查必须 grep 真正发出的符号
+（替换后的形式），不是“看起来像”的字面名。
 
-注：混淆符号里的长度数——"CleanerShortcuts" 是 16 个字符（Cleaner 7 +
-Shortcuts 9），v2.4 二进制里活下来的 `$s14CleanerIntents18CLIntentsBootstrapC`
-（CLIntentsBootstrap 18 个字符）也证实了长度前缀就是字符数；一份早期的记录
-写成 17 是数错了。v2.5 的构建检查用长度不敏感的正则（`[$]s[0-9]+…V`），
-16 和 17 都能过，真正发出的符号在验包时从二进制里确认。
+注：混淆符号里的长度数之争（"CleanerShortcuts" 是 16 还是 17 个字符）是白争——
+真正发出的符号根本不拼全名，长度数不适用。v2.5 的构建检查直接 grep 确切的替换后
+符号，不用长度不敏感的正则猜。
 
-v2.5 的做法（意图接线本身要动——“别动已验证的意图接线”是错的，因为接线就
-是坏掉的那部分；不动的是 openAppWhenRun = false 的后台意图设计）：
+v2.5 的做法（意图接线本身不用动——openAppWhenRun = false 的后台意图设计不变；
+要动的是构建检查和指引页）：
 
 - **给意图类型一个优化器删不掉的真实引用**：`CLCleanerShortcutsInfo`（Swift）
   直接读 `CleanerShortcuts.appShortcuts`，设置里的指引页把标题显示出来——
-  数据流一路到 UIKit 标签，-dead_strip 删不掉。keepAlive 保留，但不再是保护。
+  数据流一路到 UIKit 标签。keepAlive 保留，但不再是保护。
 - 设置里给一个真正的指引页，**先讲前置条件**：装 0.2.5 → 打开一次 Cleaner →
   系统索引之后再去「快捷指令」里搜 Cleaner 才会出现「清理全部缓存」；搜不到
   就重启手机再试。
 - 指引页带 **live 状态**：当前版本带不带意图（运行时读
   `CLCleanerShortcutsInfo.shortcutTitles`——即真实的注册结果，不是“类在不在
-  二进制里”：v2.4 里 CLIntentsBootstrap 类明明活着，意图却没了，查它等于没查）、
+  二进制里”）、
   这台手机上 Cleaner 打开过没有（NSUserDefaults 标记，只在真正进界面时记一次，
   无头跑意图不记），让用户自己能判断是「没装新版」还是「注册坏了」。
 - 一个按钮直接打开快捷指令 App（shortcuts://），不用用户自己去找。

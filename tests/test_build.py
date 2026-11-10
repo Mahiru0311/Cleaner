@@ -37,21 +37,25 @@ if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then
         previous=$argument
     done
     test -n "$output"
-    # The stub must carry what validate_app really checks for (v2.5):
+    # The stub must carry what the pre-strip check really greps for (v2.5):
     # the Swift-mangled intent symbols and the appShortcuts witness —
     # NOT just the bare type names. v2.4's binary kept the bare names
     # ("CleanCacheIntent", "CleanerShortcuts") while the types were gone,
     # so a stub with only bare names must FAIL the build. FAKE_DROP_INTENT
     # simulates exactly that v2.4 outcome: bare names present, mangled
-    # symbols and appShortcuts absent.
+    # symbols and appShortcuts absent. WORD SUBSTITUTION (run 42825889428):
+    # the real mangled names are $s14CleanerIntents16CleanCacheIntentV
+    # (spelled out) and $s14CleanerIntents0A9ShortcutsV ("Cleaner" -> 0A),
+    # with the appShortcuts accessor as 0A9ShortcutsV03appC0 — the
+    # literals "CleanerShortcutsV" and "appShortcuts" never appear.
     if [ "${FAKE_DROP_INTENT:-0}" = 1 ]; then
         printf '#!/bin/sh\n# CleanCacheIntent CleanerShortcuts\n# AppIntents linked\n\nexit 0\n' > "$output"
     else
         {
             printf '#!/bin/sh\n'
             printf '# %s\n' '$s14CleanerIntents16CleanCacheIntentV'
-            printf '# %s\n' '$s14CleanerIntents16CleanerShortcutsV'
-            printf '# appShortcuts\n'
+            printf '# %s\n' '$s14CleanerIntents0A9ShortcutsV'
+            printf '# %s\n' '0A9ShortcutsV03appC0'
             printf '# AppIntents linked\n'
             printf '\nexit 0\n'
         } > "$output"
@@ -228,11 +232,12 @@ class StagedBuildTests(unittest.TestCase):
             self.assertEqual(final.read_bytes(), original)
 
     def test_stripped_intent_fails_the_build(self):
-        # v2.5: the v2.4 binary kept the bare intent names but lost the
-        # types to -dead_strip, and the old bare-name grep passed it.
-        # FAKE_DROP_INTENT reproduces that binary (bare names present,
-        # mangled symbols + appShortcuts absent); the build must fail
-        # and leave the existing release untouched.
+        # v2.5: the v2.4 binary kept the bare intent names but the mangled
+        # symbols (in their real, word-substituted forms) were absent,
+        # and a bare-name grep passed it. FAKE_DROP_INTENT reproduces
+        # that binary (bare names present, mangled symbols + appShortcuts
+        # witness absent); the build must fail and leave the existing
+        # release untouched.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             final = root / "release" / "Cleaner.ipa"

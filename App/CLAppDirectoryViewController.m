@@ -119,6 +119,17 @@ static BOOL cl_path_inside_container(NSString *path, NSString *container)
     };
     UIBarButtonItem *backup = [[UIBarButtonItem alloc] initWithTitle:@"备份" style:UIBarButtonItemStylePlain
                                                                target:self action:@selector(backupTapped)];
+    // UIAction has no actionWithTitle:image:attributes:handler: — the
+    // destructive attribute is set on the action after creation.
+    UIAction *clear = [UIAction actionWithTitle:@"清空数据…" image:[UIImage systemImageNamed:@"trash"]
+                                    identifier:nil handler:^(UIAction *__unused a) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf->_busy = YES;
+        [strongSelf rebuildNavButtons];
+        [CLAppActions confirmClearApp:strongSelf->_app from:strongSelf completion:after];
+    }];
+    clear.attributes = UIMenuElementAttributesDestructive;
     NSArray *backups = cl_app_backups(_app.bundleID);
     UIMenu *more = nil;
     if (backups.count) {
@@ -133,26 +144,8 @@ static BOOL cl_path_inside_container(NSString *path, NSString *container)
             [strongSelf rebuildNavButtons];
             [CLAppActions restoreApp:strongSelf->_app from:strongSelf sourceView:nil completion:after];
         }];
-        UIAction *clear = [UIAction actionWithTitle:@"清空数据…" image:[UIImage systemImageNamed:@"trash"]
-                                attributes:UIMenuElementAttributesDestructive
-                                  handler:^(UIAction *__unused a) {
-            typeof(self) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            strongSelf->_busy = YES;
-            [strongSelf rebuildNavButtons];
-            [CLAppActions confirmClearApp:strongSelf->_app from:strongSelf completion:after];
-        }];
         more = [UIMenu menuWithChildren:@[restore, clear]];
     } else {
-        UIAction *clear = [UIAction actionWithTitle:@"清空数据…" image:[UIImage systemImageNamed:@"trash"]
-                                attributes:UIMenuElementAttributesDestructive
-                                  handler:^(UIAction *__unused a) {
-            typeof(self) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            strongSelf->_busy = YES;
-            [strongSelf rebuildNavButtons];
-            [CLAppActions confirmClearApp:strongSelf->_app from:strongSelf completion:after];
-        }];
         more = [UIMenu menuWithChildren:@[clear]];
     }
     UIBarButtonItem *moreButton = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]

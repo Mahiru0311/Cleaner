@@ -92,14 +92,22 @@
     for (NSInteger i = 0; i < 4; i++) {
         UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
         button.tag = i;
+        // Icon above label (imageEdgeInsets/titleEdgeInsets are deprecated
+        // since iOS 15; the configuration owns the layout now). The
+        // configuration must be set before the image/title, or it wipes them.
+        UIButtonConfiguration *config = [UIButtonConfiguration plainButtonConfiguration];
+        config.imagePlacement = NSDirectionalRectEdgeTop;
+        config.imagePadding = 4;
+        config.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> * _Nonnull(NSDictionary<NSAttributedStringKey, id> * _Nonnull incoming) {
+            NSMutableDictionary *attributes = [incoming mutableCopy];
+            attributes[NSFontAttributeName] = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+            return attributes;
+        };
+        button.configuration = config;
         UIImage *image = [UIImage systemImageNamed:icons[i]];
         [button setImage:image forState:UIControlStateNormal];
         [button setTitle:titles[i] forState:UIControlStateNormal];
-        button.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
         button.tintColor = UIColor.labelColor;
-        [button setTitleColor:UIColor.labelColor forState:UIControlStateNormal];
-        // Icon above label.
-        button.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
         [button addTarget:self action:@selector(tabTapped:) forControlEvents:UIControlEventTouchUpInside];
         [buttons addObject:button];
         [stack addArrangedSubview:button];
@@ -115,7 +123,7 @@
 - (void)setSelectedIndex:(NSInteger)index
 {
     if (index < 0 || index >= (NSInteger)self.tabs.count) return;
-    UIViewController *current = self.children.firstObject;
+    UIViewController *current = self.childViewControllers.firstObject;
     UINavigationController *next = self.tabs[index];
     if (current == next) {
         [self updateBarAppearanceAnimated:NO];
@@ -145,10 +153,9 @@
             BOOL selected = i == self.selectedIndex;
             UIColor *color = selected ? UIColor.systemBlueColor : UIColor.labelColor;
             button.tintColor = color;
-            [button setTitleColor:color forState:UIControlStateNormal];
-            // Icon above label: shift image up, title down.
-            button.imageEdgeInsets = UIEdgeInsetsMake(-12, 0, 0, -button.titleLabel.intrinsicContentSize.width);
-            button.titleEdgeInsets = UIEdgeInsetsMake(22, -button.currentImage.size.width, 0, 0);
+            UIButtonConfiguration *config = button.configuration;
+            config.baseForegroundColor = color;
+            button.configuration = config;
         }
         UIButton *selected = self.buttons[self.selectedIndex];
         self.pill.frame = CGRectMake(selected.frame.origin.x + 4, 6,

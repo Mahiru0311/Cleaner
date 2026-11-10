@@ -372,7 +372,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
     [_cancellation cancel];
 }
 
-- (void)startWithProgress:(void (^)(NSString *status))progress
+- (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
                completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled))completion
 {
     [self cancel];

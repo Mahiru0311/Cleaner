@@ -102,7 +102,8 @@ extern NSString *const CLCacheStoreDidUpdateNotification;
 // nil) — callers must reset their scanning state in that branch instead of
 // assuming a later completion will arrive.
 @interface CLCacheScanner : NSObject
-- (void)startWithProgress:(void (^)(NSString *status))progress
+// progress is optional (Home passes nil; all call sites nil-check it).
+- (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
                completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled))completion;
 - (void)cancel;
 @end

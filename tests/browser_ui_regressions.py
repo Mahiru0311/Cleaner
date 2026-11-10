@@ -95,6 +95,9 @@ require(tabbar, "trash.fill", "clean tab icon")
 require(tabbar, "square.grid.2x2.fill", "apps tab icon")
 require(tabbar, "gearshape.fill", "settings tab icon")
 forbid(tabbar, "UITabBarController", "system tab bar")
+require(tabbar, "imagePlacement = NSDirectionalRectEdgeTop", "tab icon above label via configuration")
+forbid(tabbar, "button.imageEdgeInsets", "deprecated button edge insets")
+forbid(tabbar, "button.titleEdgeInsets", "deprecated button edge insets")
 
 # --- Settings: attribution + log without share. ---
 for name in ("worse_query", "KAMUI", "WQFiles", "KernelSU", "GestaltX"):

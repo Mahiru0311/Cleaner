@@ -7,7 +7,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface CLAppsViewController : UITableViewController
+@interface CLAppsViewController : UITableViewController <UISearchResultsUpdating>
 @end
 
 NS_ASSUME_NONNULL_END

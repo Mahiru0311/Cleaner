@@ -7,6 +7,7 @@
 
 #import "CLAppsViewController.h"
 #import "CLApp.h"
+#import "CLAppSupport.h"
 #import "CLGrant.h"
 #import "CLScan.h"
 #import "CLLaunchServices.h"

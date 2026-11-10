@@ -354,7 +354,6 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     scroll.showsVerticalScrollIndicator = NO;
     [self.view addSubview:scroll];
     self.scrollView = scroll;
-    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],

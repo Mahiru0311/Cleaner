@@ -130,7 +130,18 @@ public final class CLCleanerShortcutsInfo: NSObject {
     // a shortcut the Shortcuts app cannot see.
     @_optimize(none)
     @objc public static var shortcutCount: Int {
-        CleanerShortcuts.appShortcuts.count
+        // Explicit metatype references: the data flow alone keeps
+        // CleanCacheIntent (it is instantiated in the provider) but NOT
+        // CleanerShortcuts — the provider type itself is never instantiated,
+        // only its static property is read, and the compiler resolves that
+        // without the type's metadata. These references are what keep the
+        // provider type (and its AppShortcutsProvider conformance) in the
+        // binary. They work ONLY because this method is @_optimize(none):
+        // keepAlive tried the same `_ = X.self` trick in v2.4 without it,
+        // and the optimizer deleted the side-effect-free references.
+        _ = CleanerShortcuts.self
+        _ = CleanCacheIntent.self
+        return CleanerShortcuts.appShortcuts.count
     }
     @_optimize(none)
     @objc public static var shortcutTitles: [String] {
@@ -140,6 +151,8 @@ public final class CLCleanerShortcutsInfo: NSObject {
         // action. There is one title per REGISTERED shortcut, so the count
         // still comes from the provider: an empty provider shows as empty
         // here, which is exactly what the guide page's live status needs.
-        CleanerShortcuts.appShortcuts.map { _ in String(localized: CleanCacheIntent.title) }
+        _ = CleanerShortcuts.self
+        _ = CleanCacheIntent.self
+        return CleanerShortcuts.appShortcuts.map { _ in String(localized: CleanCacheIntent.title) }
     }
 }

@@ -570,6 +570,8 @@ require(build, "03appC0", "CleanerIntents-module witness spelling (probe 4286188
 require(build, "03appB0", "Cleaner-module witness spelling (probe 42861887088)")
 require(build, "extract_app_intents Cleaner", "fallback extraction for the app module")
 require(build, '"$APP/Metadata.appintents"', "metadata written into the .app before signing")
+require(build, '--output "$APP"', "processor appends Metadata.appintents itself (run 42865488044)")
+forbid(build, '--output "$APP/Metadata.appintents"', "double-nested package (run 42865488044)")
 require(build, '"$app_path/Metadata.appintents', "metadata checked on the extracted IPA")
 protocols = read(ROOT / "Intents" / "swift_const_gather_protocols.json")
 # Bare JSON array of bare protocol NAMES — the {"protocols": [...]} object

@@ -230,6 +230,10 @@ xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/Modul
 
 # Extracts the App Intents metadata for module $1 into
 # $APP/Metadata.appintents and validates it (tests/check_appintents_metadata.py).
+# --output is the .app itself: the processor appends Metadata.appintents
+# (run 42865488044 passed --output $APP/Metadata.appintents and got a
+# double-nested $APP/Metadata.appintents/Metadata.appintents, so the
+# validator found no extract.actionsdata).
 # Returns non-zero when the processor fails or the package is missing,
 # empty or invalid — including when the processor prints "Extracted no
 # relevant App Intents symbols, skipping writing output" and exits 0.
@@ -248,7 +252,7 @@ extract_app_intents() {
         --binary-file "$OUT/CleanerIntents.o" \
         --source-file-list "$OUT/intent-sources.txt" \
         --swift-const-vals-list "$OUT/intent-const-vals.txt" \
-        --output "$APP/Metadata.appintents" \
+        --output "$APP" \
         --compile-time-extraction \
         --deployment-aware-processing \
         --validate-assistant-intents || return 1

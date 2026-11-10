@@ -97,14 +97,16 @@ if [ "$1" = "appintentsmetadataprocessor" ]; then
         echo 'Extracted no relevant App Intents symbols, skipping writing output' >&2
         exit 0
     fi
-    mkdir -p "$output"
+    mkdir -p "$output/Metadata.appintents"
     # Plausible extracted metadata: the CleanCacheIntent action
     # (discoverable, background) and the CleanerShortcuts auto-shortcuts
-    # with both phrases, in the shape the validator checks.
-    cat > "$output/extract.actionsdata" <<'METADATA_EOF'
+    # with both phrases, in the shape the validator checks. The real
+    # processor appends Metadata.appintents to --output itself (run
+    # 42865488044), so the fake writes there too.
+    cat > "$output/Metadata.appintents/extract.actionsdata" <<'METADATA_EOF'
 {"actions": [{"identifier": "CleanCacheIntent", "isDiscoverable": true, "openAppWhenRun": false, "title": "清理全部缓存"}], "autoShortcuts": [{"provider": "CleanerShortcuts", "phrases": ["用 Cleaner 清理全部缓存", "在 Cleaner 里清理缓存"]}]}
 METADATA_EOF
-    printf '{"version": 1}\n' > "$output/version.json"
+    printf '{"version": 1}\n' > "$output/Metadata.appintents/version.json"
     exit 0
 fi
 exit 2

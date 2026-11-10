@@ -1078,7 +1078,11 @@ CLCacheItem *cl_cache_targets_only_item(NSString *c, CLScanCancellation *cancell
     item.targets = @[caches, tmp];
     item.cacheBytes = 0;
     item.tempBytes = 0;
-    item.cacheSubdirs = nil;
+    // cacheSubdirs stays at its default (nil): the Caches top-5 breakdown
+    // comes from a tree walk, which this path never does, and the readers
+    // (clean page, directory drill-down) only use .count / fast
+    // enumeration, both nil-safe. (Assigning nil explicitly trips
+    // -Wnonnull under -Werror — the property is nonnull-assumed.)
     item.cacheKnown = NO;
     item.tempKnown = NO;
     item.unmeasured = YES;

@@ -1,0 +1,29 @@
+name: Probe const-gather-protocols format
+
+# Temporary probe for Cleaner v2.7 (run 42854024396): the Xcode 26.6
+# swift-frontend rejects Intents/swift_const_gather_protocols.json as
+# "malformed". This workflow replays the strict-check swiftc invocation
+# against 10 candidate JSON formats and prints PROBE <id>: PASS|FAIL.
+# Delete this workflow and probe/ once the format is known.
+
+on:
+  push:
+    branches: [refactor/v2]
+    paths:
+      - 'probe/**'
+      - '.github/workflows/probe-protocols.yml'
+
+jobs:
+  probe:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer || sudo xcode-select -p
+          xcodebuild -version
+
+      - name: Probe protocols formats
+        run: python3 probe/probe_protocols.py

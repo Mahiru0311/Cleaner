@@ -548,10 +548,20 @@ NSString *const CLCrashLogsPath =
 - (unsigned long long)bytes { return self.cacheBytes + self.tempBytes; }
 @end
 
+#ifdef CL_ACCESS_TESTING
+// v2.8: counts tree-measurement calls so the regression test can prove
+// the targets-only scan never measures.
+NSUInteger cl_test_measure_calls = 0;
+NSUInteger cl_test_measure_call_count(void) { return cl_test_measure_calls; }
+#endif
+
 static CLCacheMeasurementState CLCacheMeasureDirectory(NSString *path,
                                                         CLScanCancellation *cancellation,
                                                         unsigned long long *bytes)
 {
+#ifdef CL_ACCESS_TESTING
+    cl_test_measure_calls++;
+#endif
     unsigned long long total = 0;
     CLMeasureResult result = cl_measure_tree(path, cancellation, &total);
     switch (result) {
@@ -577,6 +587,9 @@ static CLCacheMeasurementState CLCacheMeasureDirectorySubdirs(NSString *path,
                                                              unsigned long long *bytes,
                                                              NSArray<NSDictionary *> **subdirsOut)
 {
+#ifdef CL_ACCESS_TESTING
+    cl_test_measure_calls++;
+#endif
     unsigned long long total = 0;
     NSArray<NSDictionary *> *subdirs = nil;
     CLMeasureResult result = cl_measure_tree_subdirs(path, cancellation, &total, subdirsOut ? &subdirs : NULL);
@@ -724,6 +737,103 @@ static void cl_measure_cache_store(NSMutableDictionary *store, NSString *contain
         @"savedAt": @(NSDate.date.timeIntervalSinceReferenceDate) };
 }
 
+#pragma mark - Persisted item list (v2.8, cached first paint)
+//
+// The last completed scan's rows, saved so the clean page can paint
+// instantly on a cold launch instead of showing an empty spinner until
+// the first measurement batch arrives. Display-only: no target records
+// are stored, so these items can never be cleaned — the clean button
+// stays hidden while the refresh scan runs, and the refresh replaces
+// them with fresh measured items (merge-by-key in the clean page).
+// Same 24 h TTL as the measurement cache; a corrupt or foreign file
+// loads as empty, never as a crash.
+
+static const NSInteger kCLItemsCacheVersion = 1;
+static const NSUInteger kCLItemsCacheMaxItems = 512;
+
+static NSString *cl_items_cache_path(void)
+{
+#ifdef CL_ACCESS_TESTING
+    extern NSString *cl_test_items_cache_path;
+    if (cl_test_items_cache_path.length) return cl_test_items_cache_path;
+#endif
+    NSString *dir = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    return dir.length ? [dir stringByAppendingPathComponent:@"cl-cache-items.plist"] : nil;
+}
+
+void cl_cache_save_items(NSArray<CLCacheItem *> *items, NSUInteger totalApps)
+{
+    NSString *path = cl_items_cache_path();
+    if (!path) return;
+    NSMutableArray *rows = [NSMutableArray new];
+    for (CLCacheItem *it in items) {
+        if (rows.count >= kCLItemsCacheMaxItems) break;
+        if (!it.name.length) continue;
+        // Crash-log rows have no containerPath (they key off their target);
+        // app rows without one are not real rows.
+        if (!it.crashLogs && !it.containerPath.length) continue;
+        [rows addObject:@{ @"name": it.name,
+                           @"bundleID": it.bundleID ?: @"",
+                           @"containerPath": it.containerPath ?: @"",
+                           @"cacheBytes": @(it.cacheBytes), @"tempBytes": @(it.tempBytes),
+                           @"cacheKnown": @(it.cacheKnown), @"tempKnown": @(it.tempKnown),
+                           @"limited": @(it.limited), @"crashLogs": @(it.crashLogs),
+                           @"selected": @(it.selected) }];
+    }
+    NSDictionary *plist = @{ @"version": @(kCLItemsCacheVersion),
+                             @"savedAt": @(NSDate.date.timeIntervalSinceReferenceDate),
+                             @"totalApps": @(totalApps), @"items": rows };
+    if (![plist writeToFile:path atomically:YES])
+        cl_log(@"cache items: cannot save the last scan to %@", path);
+}
+
+NSArray<CLCacheItem *> *cl_cache_load_items(NSTimeInterval *savedAtOut)
+{
+    if (savedAtOut) *savedAtOut = 0;
+    NSString *path = cl_items_cache_path();
+    if (!path) return nil;
+    NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:path];
+    if (![plist isKindOfClass:NSDictionary.class]) return nil;
+    if ([plist[@"version"] integerValue] != kCLItemsCacheVersion) return nil;
+    NSTimeInterval savedAt = [plist[@"savedAt"] doubleValue];
+    if (savedAt <= 0 || NSDate.date.timeIntervalSinceReferenceDate - savedAt > kCLMeasureCacheTTL) return nil;
+    NSArray *rows = plist[@"items"];
+    if (![rows isKindOfClass:NSArray.class]) return nil;
+    NSMutableArray<CLCacheItem *> *items = [NSMutableArray new];
+    for (id row in rows) {
+        if (![row isKindOfClass:NSDictionary.class]) continue;
+        NSString *name = row[@"name"];
+        if (![name isKindOfClass:NSString.class] || !name.length) continue;
+        BOOL crashLogs = [row[@"crashLogs"] boolValue];
+        NSString *containerPath = row[@"containerPath"];
+        if (![containerPath isKindOfClass:NSString.class]) containerPath = @"";
+        if (!crashLogs && !containerPath.length) continue;
+        CLCacheItem *it = [CLCacheItem new];
+        it.name = name;
+        NSString *bid = row[@"bundleID"];
+        it.bundleID = [bid isKindOfClass:NSString.class] ? bid : @"";
+        it.containerPath = containerPath;
+        it.cacheBytes = [row[@"cacheBytes"] unsignedLongLongValue];
+        it.tempBytes = [row[@"tempBytes"] unsignedLongLongValue];
+        it.cacheKnown = [row[@"cacheKnown"] boolValue];
+        it.tempKnown = [row[@"tempKnown"] boolValue];
+        it.limited = [row[@"limited"] boolValue];
+        it.crashLogs = crashLogs;
+        it.selected = [row[@"selected"] boolValue];
+        // Crash-log rows carry their target for the row key; app rows
+        // carry no target records (display-only, never cleanable).
+        if (it.crashLogs) it.targets = @[CLCrashLogsPath];
+        [items addObject:it];
+    }
+    if (!items.count) return nil;
+    if (savedAtOut) *savedAtOut = savedAt;
+    return items;
+}
+
+#ifdef CL_ACCESS_TESTING
+NSString *cl_test_items_cache_path = nil;
+#endif
+
 static BOOL CLCacheRecordIdentityMatches(CLCacheTargetRecord *record, NSString **reason)
 {
     struct stat st = {0};
@@ -846,6 +956,8 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
     _limited = limited;
     _scanning = NO;
     _lastScanFinished = NSDate.date.timeIntervalSinceReferenceDate;
+    // v2.8: persist the rows for the clean page's cached first paint.
+    cl_cache_save_items(items, totalApps);
     [[NSNotificationCenter defaultCenter] postNotificationName:CLCacheStoreDidUpdateNotification object:self];
 }
 
@@ -866,6 +978,12 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
 
 @interface CLCacheScanner ()
 @property (nonatomic, strong) CLScanCancellation *cancellation;
+// Internal entry: skipMeasurement=YES builds targets-only items (no tree
+// walks) for the background clean; NO is the measured scan for the UI.
+- (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
+              itemsUpdate:(void (^_Nullable)(NSArray<CLCacheItem *> *newItems))itemsUpdate
+               completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled, NSUInteger totalApps))completion
+         skipMeasurement:(BOOL)skipMeasurement;
 @end
 
 // Shared state for one scan's parallel workers. The lock guards the items
@@ -898,6 +1016,9 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
 @property (nonatomic) NSUInteger limitedMeasurements;
 @property (nonatomic) NSUInteger missingIdentities;
 @property (nonatomic) NSUInteger measureCacheHits;
+// v2.8: when YES, scanOneContainer builds targets-only items (no tree
+// measurement) and the crash-log measurement is skipped.
+@property (nonatomic) BOOL skipMeasurement;
 @end
 
 @implementation CLCacheScanContext
@@ -916,6 +1037,70 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
     [self startWithProgress:progress itemsUpdate:nil completion:completion];
 }
 
+// v2.8 fast path — one container's purgeable item WITHOUT measuring
+// its trees: grant + safety + stat + label + target records only. The
+// purge needs targets, not sizes, and counts the freed bytes itself;
+// measuring first meant walking every changed cache tree twice (measure,
+// then purge) and deleting nothing until all measuring was done. The
+// item is marked unmeasured (sizes unknown, 0 — NOT "nothing to clean")
+// and is limited only when the container cannot be granted, fails the
+// safety check, or has no identity — exactly like the measured scan's
+// limited rows, so the background clean counts it as skipped instead of
+// silently dropping the app. Never calls the tree-measurement functions
+// (the regression test asserts the measurement counter stays at 0).
+CLCacheItem *cl_cache_targets_only_item(NSString *c, CLScanCancellation *cancellation)
+{
+    if (cancellation.isCancelled) return nil;
+    NSString *caches = [c stringByAppendingPathComponent:@"Library/Caches"];
+    NSString *tmp = [c stringByAppendingPathComponent:@"tmp"];
+    // One ancestry walk for the container + both targets (same as the
+    // measured scan), instead of the three walks the two single-target
+    // checks used to do.
+    BOOL safeCaches = NO, safeTmp = NO;
+    BOOL safeContainer = CLSafetyContainerTargetsSafe(c, caches, @"Library/Caches", &safeCaches,
+                                                         tmp, @"tmp", &safeTmp);
+    BOOL granted = safeContainer && cl_grant(c);  // one token for the whole container
+    // Stat everything once up front: the container identity and both
+    // targets (for the target records) — no re-stat later.
+    struct stat containerStat = {0};
+    BOOL containerKnown = cl_stat(c, &containerStat) && S_ISDIR(containerStat.st_mode);
+    struct stat cachesStat = {0}, tmpStat = {0};
+    CLCachePathState cachesState = CLCacheInspectPath(caches, &cachesStat);
+    CLCachePathState tmpState = CLCacheInspectPath(tmp, &tmpStat);
+    if (!granted || !safeContainer) {
+        cl_log(@"cache scan: %@ (%@) %@", c.lastPathComponent, cl_bundle_id_for_container(c) ?: @"未知应用",
+               safeContainer ? @"拒绝访问" : @"未通过路径安全检查");
+    }
+    CLCacheItem *item = [CLCacheItem new];
+    NSString *bid = granted ? cl_container_label(c) : nil;
+    item.bundleID = bid;
+    item.name = cl_display_name(bid) ?: bid ?: c.lastPathComponent;
+    item.targets = @[caches, tmp];
+    item.cacheBytes = 0;
+    item.tempBytes = 0;
+    item.cacheSubdirs = nil;
+    item.cacheKnown = NO;
+    item.tempKnown = NO;
+    item.unmeasured = YES;
+    item.limited = !granted || !safeContainer;
+    item.containerPath = c;
+    item.targetRecords = @[
+        CLCacheTargetRecordForPathWithStat(caches, @"Library/Caches", cachesState, &cachesStat),
+        CLCacheTargetRecordForPathWithStat(tmp, @"tmp", tmpState, &tmpStat),
+    ];
+    if (containerKnown) {
+        item.containerIdentityKnown = YES;
+        item.containerDevice = containerStat.st_dev;
+        item.containerInode = containerStat.st_ino;
+        item.containerMode = containerStat.st_mode & S_IFMT;
+    }
+    if (!bid.length || !item.containerIdentityKnown) {
+        item.limited = YES;
+    }
+    item.selected = !item.limited;
+    return item;
+}
+
 // Measures one container (grant + Caches/tmp sizes + identity). Returns the
 // item, or nil when it is too small to list (both known, under 64 KB) or the
 // scan was cancelled. Updates the context counters under the context lock.
@@ -927,6 +1112,20 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
 {
     CLScanCancellation *cancellation = ctx.cancellation;
     if (cancellation.isCancelled) return nil;
+    // v2.8: the targets-only scan (background clean) never measures — the
+    // item is built without any tree walk (see cl_cache_targets_only_item).
+    // A limited item still marks the scan limited, like the measured
+    // scan does: the background clean reports partial progress when apps
+    // were skipped.
+    if (ctx.skipMeasurement) {
+        CLCacheItem *item = cl_cache_targets_only_item(c, cancellation);
+        if (item && item.limited) {
+            [ctx.lock lock];
+            ctx.scanLimited = YES;
+            [ctx.lock unlock];
+        }
+        return item;
+    }
     NSString *caches = [c stringByAppendingPathComponent:@"Library/Caches"];
     NSString *tmp = [c stringByAppendingPathComponent:@"tmp"];
     // One ancestry walk for the container + both targets (v2.2), instead of
@@ -1072,12 +1271,27 @@ NSArray<CLCacheItem *> *_Nullable cl_all_app_containers(
               itemsUpdate:(void (^_Nullable)(NSArray<CLCacheItem *> *newItems))itemsUpdate
                completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled, NSUInteger totalApps))completion
 {
+    [self startWithProgress:progress itemsUpdate:itemsUpdate completion:completion skipMeasurement:NO];
+}
+
+- (void)startTargetsOnlyWithProgress:(void (^_Nullable)(NSString *status))progress
+                          completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled, NSUInteger totalApps))completion
+{
+    [self startWithProgress:progress itemsUpdate:nil completion:completion skipMeasurement:YES];
+}
+
+- (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
+              itemsUpdate:(void (^_Nullable)(NSArray<CLCacheItem *> *newItems))itemsUpdate
+               completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled, NSUInteger totalApps))completion
+         skipMeasurement:(BOOL)skipMeasurement
+{
     [self cancel];
     CLScanCancellation *cancellation = [CLScanCancellation new];
     _cancellation = cancellation;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         CLCacheScanContext *ctx = [CLCacheScanContext new];
         ctx.cancellation = cancellation;
+        ctx.skipMeasurement = skipMeasurement;
         ctx.lock = [NSLock new];
         ctx.items = [NSMutableArray new];
         ctx.appBundleIDs = [NSMutableSet new];
@@ -1169,6 +1383,10 @@ NSArray<CLCacheItem *> *_Nullable cl_all_app_containers(
             });
             if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.appBundleIDs.count); return; }
         }
+        // v2.8: the targets-only scan skips the crash-log measurement too
+        // (crash logs are not part of the background clean's contract,
+        // and measuring them is another tree walk).
+        if (!ctx.skipMeasurement) {
         unsigned long long crash = 0;
         // Crash logs are in a system group, which worse_query reaches on iOS 27
         // only. On iOS 26 the section is left out instead of reported as limited.
@@ -1193,6 +1411,7 @@ NSArray<CLCacheItem *> *_Nullable cl_all_app_containers(
             logs.targetRecords = @[CLCacheTargetRecordForPath(CLCrashLogsPath, nil)];
             logs.selected = !logs.limited;
             [ctx.items addObject:logs];
+        }
         }
         [ctx.items sortUsingComparator:^NSComparisonResult(CLCacheItem *a, CLCacheItem *b) {
             return a.bytes > b.bytes ? NSOrderedAscending : (a.bytes < b.bytes ? NSOrderedDescending : NSOrderedSame);

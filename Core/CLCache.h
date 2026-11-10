@@ -141,6 +141,14 @@ BOOL cl_remove_entry(int parent, NSString *name, NSString *path, unsigned long l
 @property (nonatomic) BOOL cacheKnown;
 @property (nonatomic) BOOL tempKnown;
 @property (nonatomic) BOOL limited;
+// v2.8: the sizes were NOT measured — the item was built by the
+// targets-only scan (cl_cache_targets_only_item), which skips the tree
+// walks. cacheBytes/tempBytes are 0 and unknown, NOT "nothing to clean".
+// The item is still purgeable: validation is identity-based (container
+// + target records), never size-based. The background clean uses these
+// items; the UI never shows them (the clean page always shows measured
+// items, or the persisted display-only list — see below).
+@property (nonatomic) BOOL unmeasured;
 @property (nonatomic) BOOL crashLogs;
 @property (nonatomic, copy) NSString *containerPath;
 @property (nonatomic) BOOL containerIdentityKnown;
@@ -162,6 +170,38 @@ typedef NS_ENUM(NSInteger, CLCacheMeasurementState) {
 // Re-validates a scanned item right before purging it; NO with *reason when
 // the container or any target changed, or the path ancestry became unsafe.
 BOOL CLCacheValidateItem(CLCacheItem *item, NSString * _Nullable * _Nullable reason);
+
+// v2.8 fast path — targets-only scan. Builds a purgeable item for one
+// container WITHOUT measuring its trees (no CLCacheMeasureDirectory*
+// calls at all): grant + safety + stat + label + target records only.
+// The item is marked unmeasured (sizes unknown, 0); it is limited only
+// when the container cannot be granted, fails the safety check, or has
+// no identity — exactly like the measured scan's limited rows, so the
+// background clean counts it as skipped instead of silently dropping
+// the app. Returns nil only when the scan was cancelled. Never measures:
+// the regression test asserts the measurement counter stays at 0.
+CLCacheItem *_Nullable cl_cache_targets_only_item(NSString *container,
+                                                 CLScanCancellation *_Nullable cancellation);
+
+// v2.8 cached first paint — the last completed scan's item list,
+// persisted so the clean page can paint instantly on a cold launch
+// instead of showing an empty spinner until the first measurement batch
+// arrives. Display-only: the items carry no target records and can never
+// be cleaned (the clean button stays hidden while the refresh scan runs;
+// the refresh replaces them with fresh measured items). Saved by
+// CLCacheStore.updateWithItems; entries older than 24 h (the measurement
+// cache TTL) are dropped on load, and a corrupt file loads as empty.
+void cl_cache_save_items(NSArray<CLCacheItem *> *items, NSUInteger totalApps);
+NSArray<CLCacheItem *> *_Nullable cl_cache_load_items(NSTimeInterval *_Nullable savedAtOut);
+
+#ifdef CL_ACCESS_TESTING
+// Test hook: counts tree-measurement calls (CLCacheMeasureDirectory*).
+// The targets-only scan must leave it at 0.
+NSUInteger cl_test_measure_call_count(void);
+// Test hook: overrides the persisted-items path (the test points it at a
+// temp file). Nil in production.
+extern NSString *cl_test_items_cache_path;
+#endif
 
 // Every app container under Data/Application, from the filesystem —
 // independent of the scan store, so the rule picker lists apps that
@@ -218,6 +258,16 @@ extern NSString *const CLCacheStoreDidUpdateNotification;
 - (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
               itemsUpdate:(void (^_Nullable)(NSArray<CLCacheItem *> *newItems))itemsUpdate
                completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled, NSUInteger totalApps))completion;
+// v2.8 fast path — the same scan with NO tree measurement at all
+// (targets-only items: grant + safety + stat + label + target records).
+// The background clean uses this: the purge needs targets, not sizes,
+// and the purge itself counts the freed bytes — measuring first meant
+// walking every changed cache tree twice (measure, then purge) and
+// deleting nothing until all measuring was done. No itemsUpdate batches
+// (the caller does not display anything); the completion signature is
+// the same as the measured scan.
+- (void)startTargetsOnlyWithProgress:(void (^_Nullable)(NSString *status))progress
+                          completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled, NSUInteger totalApps))completion;
 - (void)cancel;
 @end
 

@@ -598,7 +598,7 @@ require(validator, "0A9ShortcutsV", "mangled provider name, literal never appear
 require(validator, "autoShortcuts", "validator checks the auto-shortcuts section")
 require(validator, "extract.actionsdata", "validator parses the actions data")
 require(validator, "version.json", "validator requires version.json")
-require(info, "<string>7</string>", "CFBundleVersion is 7")
+require(info, "<string>8</string>", "CFBundleVersion is 8")
 forbid(info, "<string>1</string>", "old frozen CFBundleVersion 1 is gone")
 require(main, "Metadata.appintents", "main comment describes the metadata file")
 forbid(main, "discovers intents by scanning the binary", "binary-scanning claim is gone from main")
@@ -661,15 +661,57 @@ forbid(picker, "请先去清理页扫描一次", "picker no longer demands a sca
 forbid(picker, "还没有扫描结果", "picker no longer shows the scan-first empty state")
 forbid(custom, "已扫描应用的容器", "resolver no longer limits itself to scanned apps")
 
+# --- Directory picker search bar (v2.8): the v2.7 on-device screenshot
+# showed the "选择应用" section header drawn OVER the search field's
+# bottom edge, and the field could not be tapped at all. Cause: the
+# search bar was created with a zero frame ([[UISearchBar alloc] init])
+# and assigned bare as the table header, so the table laid the section
+# header over the field — and the field, outside its header view's
+# bounds, never received the taps (the overlapping header swallowed
+# them). The bar now gets its natural height (sizeToFit) and lives in a
+# container whose height IS the bar's height, so the section header can
+# only start below the field; the header width is re-synced on rotation.
+require(picker, "sizeToFit", "search bar is sized before becoming the table header")
+require(picker, "tableHeaderView = header", "search bar lives in a sized container, not bare as the header")
+require(picker, "addSubview:_searchBar", "search bar fills its container")
+require(picker, "viewDidLayoutSubviews", "header width is re-synced on layout")
+forbid(picker, "self.tableView.tableHeaderView = _searchBar;", "bare zero-frame search bar as the table header is gone")
+require(picker, "选择应用", "section header still labels the app list")
+
+# --- Fast path (v2.8): cleaning was slow because the shortcut and the
+# clean page both ran a FULL scan first — every changed cache tree was
+# walked once to measure it and again to delete it, and the shortcut
+# deleted nothing until all measuring was done. The background clean now
+# runs a targets-only scan (grant + safety + stat + label + target
+# records, no tree walks at all); the purge itself counts the freed
+# bytes. The clean page paints the persisted last scan instantly and
+# refreshes it in the background, merging fresh rows by key so the list
+# never duplicates. Safety is unchanged: validation is identity-based,
+# never size-based, so an unmeasured item validates exactly like a
+# measured one.
+require(background, "startTargetsOnlyWithProgress", "background clean uses the targets-only scan")
+forbid(background, "startWithProgress:", "background clean no longer runs the full measured scan")
+require(cache, "startTargetsOnlyWithProgress", "targets-only scan entry point")
+require(cache, "cl_cache_targets_only_item", "targets-only item builder")
+require(cache, "unmeasured", "targets-only items are marked unmeasured")
+require(cache, "skipMeasurement", "scanner skips measurement on the fast path")
+require(cache, "cl_cache_save_items", "last scan is persisted")
+require(cache, "cl_cache_load_items", "persisted list loads back")
+require(cleaner, "cl_cache_load_items", "clean page paints the persisted list first")
+require(cleaner, "CLCacheItemMergeKey", "fresh rows replace cached rows by key")
+require(cleaner, "reloadRowsAtIndexPaths", "replaced cached rows reload in place, not insert")
+forbid(cleaner, "arrayByAddingObjectsFromArray", "batch merge no longer appends blindly (duplicates on rescan)")
+
 # --- Mode line (v2.5): v2.1's 15pt + max 2 lines did not stop the
 # mid-word break ("<App Group> [沙 / 盒模式]" on the 20:46 screenshot).
 # The copy is now just "沙盒模式" — short enough to never break.
 require(home, "沙盒模式", "mode line is short")
 forbid(home, '@"<App Group> [沙盒模式]"', "old mode line that broke mid-word")
 # v2.7: the version label is dynamic (reads the bundle), and the two
-# fallbacks use 0.2.7 — no hardcoded 0.2.6 anywhere in Home.
+# fallbacks use 0.2.8 — no hardcoded 0.2.7 anywhere in Home.
 require(home, 'stringWithFormat:@"版本：%@"', "version label is dynamic, not hardcoded")
-forbid(home, "0.2.6", "no hardcoded 0.2.6 in home")
+require(home, '@"0.2.8"', "home fallback version tracks the release")
+forbid(home, "0.2.7", "no hardcoded 0.2.7 in home")
 
 # --- Animations (v2.3, redone): scan batches insert with a fade, the
 # progress bar shows the real scan fraction, cleaning shows a per-row
@@ -706,7 +748,7 @@ require(main, "cl_set_container_label_resolver", "container label resolver")
 require(main, "cl_set_container_list_provider", "container list provider")
 require(main, "cl_recover_interrupted_restore", "interrupted restore recovery")
 
-# --- Build: only the v2 sources, iPhone only, 0.2.7. ---
+# --- Build: only the v2 sources, iPhone only, 0.2.8. ---
 for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.m",
                "Core/CLLaunchServices.m", "Core/CLCustomClean.m", "Core/CLBackgroundClean.m",
                "App/CLUI.m",
@@ -732,8 +774,8 @@ forbid(build, "-Os -dead_strip", "dead-strip removed from the link")
 runner = read(ROOT / "tests" / "run_all_tests.sh")
 for source in ("App/CLRulePickerViewController.m", "App/CLShortcutsGuideViewController.m"):
     require(runner, source, f"strict-check source {source}")
-require(info, "<string>0.2.7</string>", "version 0.2.7")
-forbid(info, "<string>0.2.6</string>", "old version 0.2.6")
+require(info, "<string>0.2.8</string>", "version 0.2.8")
+forbid(info, "<string>0.2.7</string>", "old version 0.2.7")
 forbid(info, "CFBundleIcons~ipad", "iPad icon set")
 forbid(info, "UISupportedInterfaceOrientations~ipad", "iPad orientations")
 

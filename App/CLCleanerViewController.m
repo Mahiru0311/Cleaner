@@ -26,6 +26,17 @@ static CGFloat CLCacheScanFraction(NSString *status)
     return (CGFloat)done / (CGFloat)total;
 }
 
+// Merge key for a row (v2.8): bundle id for apps (one app can own
+// several containers, but the scan emits one row per app), the target
+// path for the crash-logs row (no bundle id), container path as a
+// fallback.
+static NSString *CLCacheItemMergeKey(CLCacheItem *item)
+{
+    if (item.crashLogs) return item.targets.firstObject ?: @"crash-logs";
+    if (item.bundleID.length) return item.bundleID;
+    return item.containerPath ?: @"";
+}
+
 static void CLCacheSelectionCategories(NSArray<CLCacheItem *> *items,
                                        BOOL *hasApps,
                                        BOOL *hasCrashLogs,
@@ -249,6 +260,19 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
     self.definesPresentationContext = YES;
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
+    // v2.8: paint the last scan instantly (cached first paint). A cold
+    // launch used to show an empty spinner until the first measurement
+    // batch arrived; the persisted list is on screen immediately, and
+    // the refresh scan below replaces its rows with fresh measurements
+    // as they arrive (merge-by-key in the batch handler). The rows are
+    // display-only — they carry no target records, so they can never be
+    // cleaned — and the clean button stays hidden while refreshing.
+    NSArray<CLCacheItem *> *cached = cl_cache_load_items(NULL);
+    if (cached.count) {
+        _items = cached;
+        [self rebuildVisibleItems];
+        [self.tableView reloadData];
+    }
     [self scan];
 }
 
@@ -390,24 +414,50 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
         dispatch_async(dispatch_get_main_queue(), ^{
             typeof(self) strongSelf = weakSelf;
             if (!strongSelf || generation != strongSelf->_scanGeneration || strongSelf->_cleaning) return;
-            NSArray *merged = [(strongSelf->_items ?: @[]) arrayByAddingObjectsFromArray:newItems];
+            // v2.8: merge by key, not append. The list may start as the
+            // persisted (display-only) rows; a fresh measurement for the
+            // same app REPLACES its cached row in place (carrying the
+            // user's selection over), so the list never shows the same
+            // app twice and the total stays stable as rows refresh.
+            NSMutableArray<CLCacheItem *> *merged = [(strongSelf->_items ?: @[]) mutableCopy];
+            NSMutableSet<CLCacheItem *> *replaced = [NSMutableSet new];
+            for (CLCacheItem *fresh in newItems) {
+                NSString *key = CLCacheItemMergeKey(fresh);
+                NSUInteger existing = [merged indexOfObjectPassingTest:^BOOL(CLCacheItem *it, NSUInteger __unused i, BOOL * __unused s) {
+                    return [CLCacheItemMergeKey(it) isEqualToString:key];
+                }];
+                if (existing != NSNotFound) {
+                    fresh.selected = merged[existing].selected;
+                    merged[existing] = fresh;
+                    [replaced addObject:fresh];
+                } else {
+                    [merged addObject:fresh];
+                }
+            }
             strongSelf->_items = [merged sortedArrayUsingComparator:^NSComparisonResult(CLCacheItem *a, CLCacheItem *b) {
                 return a.bytes > b.bytes ? NSOrderedAscending : (a.bytes < b.bytes ? NSOrderedDescending : NSOrderedSame);
             }];
             [strongSelf rebuildVisibleItems];
             // Insert the new rows with a fade (v2.3) instead of reloading
             // the whole table — the list visibly grows while scanning.
+            // A replaced cached row is RELOADED, not inserted: inserting
+            // a row that already exists crashes the table update.
             // While searching the visible list is filtered, so fall back
             // to a plain reload there.
             if (!strongSelf->_query.length) {
-                NSMutableArray<NSIndexPath *> *paths = [NSMutableArray new];
+                NSMutableArray<NSIndexPath *> *insertPaths = [NSMutableArray new];
+                NSMutableArray<NSIndexPath *> *reloadPaths = [NSMutableArray new];
                 for (CLCacheItem *item in newItems) {
                     NSUInteger row = [strongSelf->_items indexOfObjectIdenticalTo:item];
-                    if (row != NSNotFound) [paths addObject:[NSIndexPath indexPathForRow:row inSection:1]];
+                    if (row == NSNotFound) continue;
+                    NSIndexPath *path = [NSIndexPath indexPathForRow:row inSection:1];
+                    if ([replaced containsObject:item]) [reloadPaths addObject:path];
+                    else [insertPaths addObject:path];
                 }
-                if (paths.count) {
+                if (insertPaths.count || reloadPaths.count) {
                     [strongSelf.tableView beginUpdates];
-                    [strongSelf.tableView insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+                    if (insertPaths.count) [strongSelf.tableView insertRowsAtIndexPaths:insertPaths withRowAnimation:UITableViewRowAnimationFade];
+                    if (reloadPaths.count) [strongSelf.tableView reloadRowsAtIndexPaths:reloadPaths withRowAnimation:UITableViewRowAnimationFade];
                     [strongSelf.tableView endUpdates];
                     // insertRows does not refresh the section header count.
                     UITableViewHeaderFooterView *header = [strongSelf.tableView headerViewForSection:1];

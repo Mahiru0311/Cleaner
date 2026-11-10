@@ -998,3 +998,31 @@ v2.7 共 8 次构建才成功（run 42866252916，head d717f77），中间还插
 构建：Actions run 42866252916（head d717f77）成功。IPA `~/workspace/downloads/cleaner-v2-7-ipa/Cleaner.ipa`，219,372 字节（< 250KB 目标），SHA-256 `77dc3926505f1007cfc57280535bb7eb0243e994cadac007e39e9248eb631ba1`。
 亲验（下载的 IPA 本体）：13 个文件——二进制、Info.plist、4 个图标、_CodeSignature、`Metadata.appintents/extract.actionsdata`（1,795 字节）+ `version.json`；无 .appex；校验器在发版包上通过（`app intents metadata OK: CleanCacheIntent (discoverable, background) + CleanerShortcuts (2 phrases)`）；Info.plist 0.2.7 / build 7 / MinimumOS 26.0 / zh_CN / iPhone only（UIDeviceFamily [1]）/ Portrait；cleaner:// scheme；`__swift5_types` 4 个描述符（CleanCacheIntent、CleanerShortcuts、CLIntentsBootstrap、CLCleanerShortcutsInfo）；二进制链接了 AppIntents（`/System/Library/Frameworks/AppIntents.framework/AppIntents`）；元数据内容：intent 可发现 + 后台 + 标题「清理全部缓存」，provider `14CleanerIntents0A9ShortcutsV`，auto-shortcut 两条短语（`${applicationName}` 占位符）、shortTitle「清理全部缓存」、图标 trash。注意：主二进制 562,544 字节，**仍超 <500KB 的二进制目标**（v2.6 是 562,464，基本没变；-Onone 未动）；IPA 仍在目标内。
 真机验证仍未做：**必须整个删掉 Cleaner 再装 v2.7（不要覆盖安装）**，打开一次，然后确认 Shortcuts 搜索「清理全部缓存」能搜到、应用页能看到，再点一下确认后台执行（指引页「上次运行」应显示「后台运行，未打开应用」）；选择器能列出未扫描过的应用、手动路径能解析未扫描应用——都须用户在 iPhone 17 / iOS 27.0 上确认。v2.7 短链 https://is.gd/bFhulo，2026-11-13 01:37 CST 过期（底层文件 48h 有效期）；v2.6 短链 https://is.gd/LhozJN，2026-11-12 22:20 CST 过期。
+
+## 15. v2.8（2026-11-11 凌晨，v2.7 真机反馈：规则选择器搜索栏点不了 + 快捷指令清理慢）——最终版
+
+### 诊断
+
+两件事，根因各一个，都是代码里看得见的：
+
+- **选择器搜索栏点不了（+「选择应用」标题盖住搜索栏底部）**：`CLRulePickerViewController` 用裸 `[[UISearchBar alloc] init]`（零 frame）直接当 `tableHeaderView`。表把「选择应用」section 头画在搜索栏底部之上；搜索栏落在 header view 的 bounds 之外，又被上层 header 盖住，点按进不了 hit-test，整个搜索栏收不到 tap。两个症状（重叠 + 点不动）同一个根因。
+- **慢**：慢的步骤是**清理/加载前先跑一次全量扫描**。后台清理（`CLBackgroundCleanRun`）用信号量等完整测量扫描走完（枚举容器 + 每个应用的缓存树逐文件 stat，约 114 个应用）才开始删——变了的缓存树等于走了两遍（先测、再删），且在测量全部完成前一个字节都不删。清理页冷启动则是一片空转圈，等第一个测量 batch（8 个应用）到了才有内容。24h 测量缓存（v2.2，按 (mtime,size) 键）只在树没变时省事。清理本身其实不需要尺寸：自定义规则引擎（`cl_custom_clean_apply_rule`）只用条目的 bundleID + 容器路径 + 名字；验证（`CLCacheValidateItem`）是按身份（容器 + 目标记录）不是按尺寸，所以没测量的条目和已测量的条目验证结果完全一样。
+
+### 修了什么
+
+- **选择器搜索栏（`App/CLRulePickerViewController.m`）**：`[bar sizeToFit]` 取自然高度，搜索栏放进一个高度**就是**栏高的容器 UIView（栏填满容器，autoresizing 灵活宽高），容器当 `tableHeaderView`；`viewDidLayoutSubviews` 按表宽同步 header 宽度（宽变才重设，防布局循环）。section 头只能从搜索栏下面开始，栏内任何点都在 header view 的 bounds 内。搜索逻辑未动（delegate + 实时过滤）。
+- **后台清理快速通道（Core，`CLCache.h/.m` + `CLBackgroundClean.m`）**：新 `cl_cache_targets_only_item`——只做授权 + 安全检查 + stat + 标签 + 目标记录，**不调任何树测量函数**；条目标 `unmeasured=YES`（字节 0 = 尺寸未知，不是「没东西可清」），`limited=NO`，除非拿不到授权/安全检查不过/没身份（与测量扫描的 limited 行同口径，后台清理按跳过记）。新 `CLCacheScanner.startTargetsOnlyWithProgress:completion:`（内部 `skipMeasurement` 旗标穿透扫描方法；crash-log 测量也跳过——crash log 不在后台清理合同里）；受限条目照样置 `scanLimited`，后台清理的 partial 汇报保持诚实。`CLBackgroundCleanRun` 改走 targets-only（25 秒预算未动），清理时 purge 自己数释放字节。速度收益：测量那一遍整段省掉——枚举（10 分钟共享缓存 / LaunchServices 库）+ 每容器一次授权 + 安全 walk + stat，是扫描剩下的全部。`Intents/CleanerIntents.swift` 头注释同步（「测量缓存热了就快」的旧说法已删）。
+- **清理页缓存首屏（Core + App）**：新 `cl_cache_save_items` / `cl_cache_load_items`——上次完整扫描的行存到 Caches 目录 `cl-cache-items.plist`（带版本、24h TTL 与测量缓存同、`savedAt`，512 行上限；只存展示字段，不存目标记录，所以缓存行**永远清不掉**——清理按钮在刷新扫描时保持隐藏，刷新完成才出现）。`CLCacheStore.updateWithItems` 里保存。`CLCleanerViewController.viewDidLoad` 先画缓存列表再启动刷新扫描；batch handler 按 key 合并（`CLCacheItemMergeKey`：应用按 bundleID、crash-log 行按目标路径）：新鲜测量行**原地替换**缓存行并继承 `selected`，真正新的行才插入，替换的行用 `reloadRowsAtIndexPaths`（insert 已存在的行会崩表更新）。附带好处：重扫中途不再出现重复行（旧代码是把 batch 追加到旧列表上）。
+- **版本**：0.2.7 → **0.2.8**（short），CFBundleVersion 7 → **8**。`build.sh` 的 `Metadata.appintents` 提取流程**原样未动**（v2.7 已证实可用）；clean 动画未动（`CLCleanerViewController.m` 里仍无 "v2.6" 字样，回归测试守着）；选择器全容器树（`cl_all_app_containers`）未动。
+
+### 测试
+
+- 新 `tests/CLCacheFastPathTests.m`（进 `tests/run_all_tests.sh`）：targets-only builder——两条目标记录 + 身份 + `unmeasured` + 测量计数器不动（含无 Caches/tmp 的容器）；持久化往返（含 crash-log 行）；损坏文件 → 空；25 小时旧 → 丢弃；版本号不对 → 丢弃。测量计数器（`cl_test_measure_call_count`，`#ifdef CL_ACCESS_TESTING`）插在两个 `CLCacheMeasureDirectory*` 函数里；缓存路径测试钩 `cl_test_items_cache_path`。
+- `tests/browser_ui_regressions.py` 新增 v2.8 段：选择器（`sizeToFit`、容器当 header、`addSubview:_searchBar`、`viewDidLayoutSubviews`、禁裸 `self.tableView.tableHeaderView = _searchBar;`）；快速通道（后台用 `startTargetsOnlyWithProgress`、禁 `startWithProgress:`、要求 `unmeasured`/`skipMeasurement`/`cl_cache_save_items`/`cl_cache_load_items`/`CLCacheItemMergeKey`/`reloadRowsAtIndexPaths`、禁 `arrayByAddingObjectsFromArray`）；版本检查改 0.2.8 / build 8、首页 fallback 要求 `@"0.2.8"`。
+
+本地已验（Linux，无 Xcode）：`browser_ui_regressions.py` 通过；`python3 -m unittest discover -s tests -p 'test_*.py'` 18 个，2 个失败与 v2.0–v2.7 相同（`test_build` 两用例缺 `plutil`，Linux 固有）；`bash -n build.sh tests/run_all_tests.sh` 通过。ObjC 测试在 macOS Actions runner 上跑（`run_all_tests.sh`）。
+
+构建：（待填：Actions run id + 状态）。
+IPA：（待填：路径、大小、SHA-256）。
+亲验：（待填：解包验证——Metadata.appintents + 解析内容、Info.plist 0.2.8/build 8、MinimumOS 26.0、zh_CN、iPhone only、大小、SHA、App Group、cleaner:// scheme、无 .appex）。
+真机验证仍未做：**必须用户在 iPhone 17 / iOS 27.0 上确认**——选择器搜索栏能点、能输入过滤，「选择应用」标题不再盖住搜索栏；快捷指令清理明显变快；清理页冷启动先出上次的列表、再刷新。速度只能真机确认，代码层面不能宣称已快。v2.8 短链（待填）。

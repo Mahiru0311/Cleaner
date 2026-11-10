@@ -156,6 +156,21 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
     [self reloadForCurrentState];
 }
 
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+    // v2.8: keep the search header as wide as the table (rotation): the
+    // header view is re-assigned so the table re-lays-out the section
+    // header below it. Guarded by the width check — re-assigning
+    // unconditionally would loop layout.
+    if (!self.isAppListMode) return;
+    UIView *header = self.tableView.tableHeaderView;
+    if (header && header.frame.size.width != self.tableView.bounds.size.width) {
+        header.frame = CGRectMake(0, 0, self.tableView.bounds.size.width, header.frame.size.height);
+        self.tableView.tableHeaderView = header;
+    }
+}
+
 #pragma mark - State
 
 - (BOOL)isAppListMode { return _app == nil; }
@@ -249,9 +264,25 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
             UISearchBar *bar = [[UISearchBar alloc] init];
             bar.placeholder = @"搜索应用";
             bar.delegate = self;
+            // v2.8: the bar MUST have its natural height before it becomes
+            // the table header. A bare [[UISearchBar alloc] init] has a
+            // zero frame; the table then laid the "选择应用" section header
+            // over the search field's bottom edge, and the header — on top
+            // in z-order, and the field outside its header view's bounds
+            // — swallowed the taps, so the field could not be tapped at
+            // all (v2.7 on-device screenshot). The bar lives in a
+            // container whose height IS the bar's height, so the section
+            // header can only start below the field, and every tap inside
+            // the field is inside the header view's bounds.
+            [bar sizeToFit];
             _searchBar = bar;
         }
-        self.tableView.tableHeaderView = _searchBar;
+        UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width,
+                                                                  _searchBar.bounds.size.height)];
+        _searchBar.frame = header.bounds;
+        _searchBar.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [header addSubview:_searchBar];
+        self.tableView.tableHeaderView = header;
         [self.tableView reloadData];
         return;
     }

@@ -3,10 +3,11 @@
 //  CLBackgroundClean.m
 //  Cleaner v2.4 — the default clean, runnable without any UI.
 //
-//  Same work as the Cleaner page's clean button, minus the UI: scan, then
-//  validate + purge each app's Library/Caches + tmp, then the enabled
-//  custom rules. Crash logs are NOT included (the intent's contract is
-//  apps' caches + tmp + custom rules).
+//  Same work as the Cleaner page's clean button, minus the UI: a
+//  targets-only scan (v2.8 — no tree measurement; the purge needs
+//  targets, not sizes), then validate + purge each app's Library/Caches
+//  + tmp, then the enabled custom rules. Crash logs are NOT included
+//  (the intent's contract is apps' caches + tmp + custom rules).
 //
 //  Safety is the same as the UI clean: every item is re-validated
 //  (CLCacheValidateItem) immediately before its targets are purged, and a
@@ -66,14 +67,21 @@ NSDictionary *CLBackgroundCleanRun(NSTimeInterval budgetSeconds)
     CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
     NSTimeInterval (^elapsed)(void) = ^{ return CFAbsoluteTimeGetCurrent() - started; };
 
-    // --- Scan (measurement cache first; the app's own scans keep it warm).
+    // --- Targets-only scan (v2.8): no tree measurement. The purge needs
+    // targets, not sizes, and counts the freed bytes itself — the old
+    // full scan walked every changed cache tree first (measure) and the
+    // purge then walked it again to delete, so the shortcut deleted
+    // nothing until all measuring was done. Container enumeration (shared
+    // 10-minute cache / LaunchServices database) plus one grant + safety
+    // walk + stat per container is all the scan does now; crash logs are
+    // not part of this contract and are not measured either.
     CLCacheScanner *scanner = [CLCacheScanner new];
     dispatch_semaphore_t scanSem = dispatch_semaphore_create(0);
     __block NSArray<CLCacheItem *> *items = nil;
     __block BOOL scanLimited = NO;
     __block BOOL scanCancelled = NO;
     __block NSUInteger totalApps = 0;
-    [scanner startWithProgress:nil completion:^(NSArray<CLCacheItem *> *scanItems, BOOL limited,
+    [scanner startTargetsOnlyWithProgress:nil completion:^(NSArray<CLCacheItem *> *scanItems, BOOL limited,
                                                 NSString *__unused note, BOOL cancelled, NSUInteger apps) {
         items = scanItems;
         scanLimited = limited;
@@ -83,7 +91,9 @@ NSDictionary *CLBackgroundCleanRun(NSTimeInterval budgetSeconds)
     }];
     // The scanner calls its completion on a background queue, so waiting
     // here (off the main thread — the Swift side guarantees that) cannot
-    // deadlock. A scan is normally a few seconds with a warm cache.
+    // deadlock. A targets-only scan is normally quick (enumeration plus
+    // one grant per container, no tree walks); the old full scan was a
+    // few seconds with a warm measurement cache and much longer cold.
     dispatch_semaphore_wait(scanSem, DISPATCH_TIME_FOREVER);
     if (scanCancelled || !items) {
         return @{ @"freed": @0, @"customFreed": @0, @"failed": @0, @"customFailed": @0,

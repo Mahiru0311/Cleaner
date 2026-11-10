@@ -55,7 +55,9 @@
 //  clean stops starting new apps after 25 s and reports partial progress
 //  honestly (appsRemaining > 0) instead of pretending it finished. A
 //  re-run is cheap — the measurement cache is warm and the already-clean
-//  apps measure ~0.
+//  apps measure ~0. (v2.8: the scan itself is targets-only — no tree
+//  measurement at all — so a re-run costs no re-measuring; only the purge
+//  walks the trees, once.)
 //
 //  CLIntentsBootstrap.keepAlive() is called from main.m. Whether
 //  keepAlive alone keeps the types linked was never actually proven:

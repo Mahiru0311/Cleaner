@@ -30,6 +30,10 @@ if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then
     chmod +x "$output"
     exit 0
 fi
+if [ "$1" = "--sdk" ] && [ "$3" = "strip" ]; then
+    # build.sh strips the linked binary; the fixture binary is already a stub.
+    exit 0
+fi
 exit 2
 '''
 

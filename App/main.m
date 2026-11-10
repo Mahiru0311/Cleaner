@@ -1,0 +1,58 @@
+//
+//  main.m
+//  Cleaner v2 — entry point. Scene delegate owns a CLTabBarController;
+//  no UINavigationController root, no file browser, no sharing.
+//
+
+#import <UIKit/UIKit.h>
+#import "CLTabBarController.h"
+#import "CLApp.h"
+#import "CLGrant.h"
+#import "CLLaunchServices.h"
+
+@interface CLSceneDelegate : UIResponder <UIWindowSceneDelegate>
+@property (nonatomic, strong) UIWindow *window;
+@end
+
+@implementation CLSceneDelegate
+
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session
+       options:(UISceneConnectionOptions *)connectionOptions
+{
+    UIWindow *window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    window.rootViewController = [CLTabBarController new];
+    [window makeKeyAndVisible];
+    self.window = window;
+
+    // Recover an interrupted restore from a previous launch, if any.
+    NSString *recovery = cl_recover_interrupted_restore();
+    if (recovery.length) cl_log(@"%@", recovery);
+}
+
+@end
+
+@interface CLAppDelegate : UIResponder <UIApplicationDelegate>
+@end
+
+@implementation CLAppDelegate
+
+- (UISceneConfiguration *)application:(UIApplication *)application
+    configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession
+                                  options:(UISceneConnectionOptions *)options
+{
+    UISceneConfiguration *config = [[UISceneConfiguration alloc] initWithName:@"Default"
+                                                                  sessionRole:connectingSceneSession.role];
+    config.delegateClass = CLSceneDelegate.class;
+    return config;
+}
+
+@end
+
+int main(int argc, char *argv[])
+{
+    @autoreleasepool {
+        cl_set_container_label_resolver(cl_bundle_id_for_container);
+        cl_set_container_list_provider(cl_ls_container_paths);
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass(CLAppDelegate.class));
+    }
+}

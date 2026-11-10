@@ -59,9 +59,13 @@ mkdir -p "$APP"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/ModuleCache" -arch arm64 \
     -miphoneos-version-min="$MINIMUM_IOS_VERSION" \
-    -isysroot "$SDK" -Wall -Wextra -Werror -O2 \
+    -isysroot "$SDK" -I Core -I App -Wall -Wextra -Werror -Os -flto -dead_strip \
     -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers \
-    WQCore.m WQAccess.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m main.m -o "$APP/Cleaner"
+    Core/CLGrant.m Core/CLScan.m Core/CLCache.m Core/CLApp.m Core/CLLaunchServices.m \
+    App/CLUI.m App/CLCleanerViewController.m App/CLAppsViewController.m \
+    App/CLHomeViewController.m App/CLSettingsViewController.m App/CLLogViewController.m \
+    App/CLTabBarController.m App/main.m -o "$APP/Cleaner"
+xcrun --sdk iphoneos strip -x "$APP/Cleaner"
 cp Info.plist "$APP/Info.plist"
 cp icons/AppIcon*@*.png "$APP/"
 plutil -convert binary1 "$APP/Info.plist"

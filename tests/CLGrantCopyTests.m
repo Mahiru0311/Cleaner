@@ -23,6 +23,9 @@ int main(void)
                           [@"CLGrantCopyTests-" stringByAppendingString:NSUUID.UUID.UUIDString]];
         mkdirs(base);
         @try {
+            NSString *file = [base stringByAppendingPathComponent:@"source-file"];
+            NSString *error = nil;
+            put(file, @"source bytes");
             NSString *srcDir = [base stringByAppendingPathComponent:@"src"];
             NSString *dstDir = [base stringByAppendingPathComponent:@"dst"];
             mkdirs(srcDir); mkdirs(dstDir);

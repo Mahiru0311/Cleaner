@@ -1022,7 +1022,7 @@ v2.7 共 8 次构建才成功（run 42866252916，head d717f77），中间还插
 
 本地已验（Linux，无 Xcode）：`browser_ui_regressions.py` 通过；`python3 -m unittest discover -s tests -p 'test_*.py'` 18 个，2 个失败与 v2.0–v2.7 相同（`test_build` 两用例缺 `plutil`，Linux 固有）；`bash -n build.sh tests/run_all_tests.sh` 通过。ObjC 测试在 macOS Actions runner 上跑（`run_all_tests.sh`）。
 
-构建：（待填：Actions run id + 状态）。
-IPA：（待填：路径、大小、SHA-256）。
-亲验：（待填：解包验证——Metadata.appintents + 解析内容、Info.plist 0.2.8/build 8、MinimumOS 26.0、zh_CN、iPhone only、大小、SHA、App Group、cleaner:// scheme、无 .appex）。
-真机验证仍未做：**必须用户在 iPhone 17 / iOS 27.0 上确认**——选择器搜索栏能点、能输入过滤，「选择应用」标题不再盖住搜索栏；快捷指令清理明显变快；清理页冷启动先出上次的列表、再刷新。速度只能真机确认，代码层面不能宣称已快。v2.8 短链（待填）。
+构建：第一轮 run 42872980470（head 8b9ebb9）失败——唯一错误：`Core/CLCache.m:1081` `item.cacheSubdirs = nil` 触发 `-Wnonnull`（`-Werror`；属性是 nonnull-assumed）。修法是删掉这行（新条目的 cacheSubdirs 默认就是 nil，与已测量但无子目录的条目同状态；读处只用 .count / 枚举，都是 nil-safe）。修完提交 c978577，推送后 remote head 48cef0fe；第二轮 run 42875942486（head 48cef0f）成功。
+IPA `~/workspace/downloads/cleaner-v2-8-ipa/Cleaner.ipa`，222,113 字节（< 250KB 目标），SHA-256 `7e35b91897b89a92fcd071085fe02b1e68615eb0856e48a3d11a7863d35da9c3`。
+亲验（下载的 IPA 本体）：9 个文件——二进制、Info.plist、4 个图标、_CodeSignature、`Metadata.appintents/extract.actionsdata`（1,795 字节）+ `version.json`（toolsVersion 26.6 / version 3.0）；无 .appex；校验器在发版包上通过（`app intents metadata OK: CleanCacheIntent (discoverable, background) + CleanerShortcuts (2 phrases)`）；元数据内容：intent 可发现 + 后台 + 标题「清理全部缓存」，provider `14CleanerIntents0A9ShortcutsV`，auto-shortcut 两条短语（`${applicationName}` 占位符）、shortTitle「清理全部缓存」、图标 trash；Info.plist 0.2.8 / build 8 / MinimumOS 26.0 / zh_CN / iPhone only（UIDeviceFamily [1]）/ Portrait；cleaner:// scheme；bundle id `com.mahiru.cleaner`；App Group `group.com.mahiru.cleaner` 在二进制内（entitlements）；`__swift5_types` 4 个描述符；二进制链接了 AppIntents。注意：主二进制 562,752 字节，**仍超 <500KB 的二进制目标**（v2.7 是 562,544，+208 字节；-Onone 未动）；IPA 仍在目标内。
+真机验证仍未做：**必须用户在 iPhone 17 / iOS 27.0 上确认**——选择器搜索栏能点、能输入过滤，「选择应用」标题不再盖住搜索栏；快捷指令清理明显变快；清理页冷启动先出上次的列表、再刷新。速度只能真机确认，代码层面不能宣称已快。**短链未生成**：Muse storage 上传要用户批 egress，批卡两次超时未批（approval `connector-attempt-d53d337c…`，2026-11-10 19:10 UTC 超时；文件未上传）。等用户在时再跑一次上传 + is.gd，补到这里。v2.7 短链 https://is.gd/bFhulo，2026-11-13 01:37 CST 过期。

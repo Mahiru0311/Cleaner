@@ -104,4 +104,42 @@ for cid, desc, obj in CANDIDATES:
               flush=True)
 
 print(f"PROBE DONE: {npass}/{len(CANDIDATES)} passed", flush=True)
+
+# Phase 2 (run 42857021899): the fallback build as module "Cleaner" failed
+# the pre-strip witness grep ("linked binary has no appShortcuts witness")
+# while the first two greps passed. Dump the Shortcuts symbols of both
+# .o files and test build.sh's three greps against each, so the fallback
+# pattern can be fixed from evidence instead of mangling theory.
+cleaner_cmd = [a for a in BASE_CMD]
+cleaner_cmd[cleaner_cmd.index("-module-name") + 1] = "Cleaner"
+cleaner_cmd[cleaner_cmd.index("-Xfrontend", cleaner_cmd.index(
+    "-const-gather-protocols-file")) + 1] = f"{OUT}/proto-C4.json"
+cleaner_cmd[-1] = f"{OUT}/Cleaner.o"
+r = subprocess.run(cleaner_cmd, capture_output=True, text=True)
+print(f"PROBE SYMBOLS compile-as-Cleaner: "
+      f"{'PASS' if r.returncode == 0 else 'FAIL'}", flush=True)
+if r.returncode != 0:
+    print((r.stderr or r.stdout or "").strip().splitlines()[-1], flush=True)
+
+import re as _re
+for obj, label, prefix in [
+        (f"{OUT}/CleanerIntents.o", "CleanerIntents", r"[$]s14CleanerIntents"),
+        (f"{OUT}/Cleaner.o", "Cleaner", r"[$]s7Cleaner")]:
+    nm = subprocess.run(["nm", "-a", obj], capture_output=True, text=True)
+    if nm.returncode != 0:
+        nm = subprocess.run(["xcrun", "nm", "-a", obj],
+                            capture_output=True, text=True)
+    syms = [l for l in nm.stdout.splitlines() if "Shortcuts" in l]
+    print(f"PROBE SYMBOLS [{label}]: {len(syms)} Shortcuts symbols",
+          flush=True)
+    for l in syms:
+        print(f"  {l}", flush=True)
+    blob = open(obj, "rb").read()
+    for pat, desc in [
+            (prefix + r"16CleanCacheIntentV", "CleanCacheIntent type"),
+            (prefix + r"0A9ShortcutsV", "CleanerShortcuts provider"),
+            (r"0A9ShortcutsV03appC0", "appShortcuts witness")]:
+        hit = _re.search(pat.encode(), blob) is not None
+        print(f"PROBE SYMBOLS [{label}] grep {desc}: "
+              f"{'PASS' if hit else 'FAIL'} ({pat})", flush=True)
 sys.exit(0)

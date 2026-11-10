@@ -65,6 +65,11 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 XCODE_VERSION=$(xcodebuild -version | sed -n 's/^Xcode //p') || \
     fail "cannot determine the Xcode version (xcodebuild -version)"
 [[ -n "$XCODE_VERSION" ]] || fail "cannot determine the Xcode version (xcodebuild -version)"
+# The metadata processor requires --toolchain-dir (run 42857021899
+# failed with "Missing value for '--toolchain-dir'" without it):
+# the default toolchain under the active developer dir.
+TOOLCHAIN_DIR="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain"
+[[ -d "$TOOLCHAIN_DIR" ]] || fail "toolchain dir not found: $TOOLCHAIN_DIR"
 # App Intents metadata input lists (v2.7): the processor takes the source
 # files and the Swift const-values files as lists, one path per line.
 printf '%s\n' "$ROOT/Intents/CleanerIntents.swift" > "$OUT/intent-sources.txt"
@@ -228,6 +233,7 @@ extract_app_intents() {
         --deployment-target "$MINIMUM_IOS_VERSION" \
         --target-triple arm64-apple-ios26.0 \
         --xcode-version "$XCODE_VERSION" \
+        --toolchain-dir "$TOOLCHAIN_DIR" \
         --binary-file "$OUT/CleanerIntents.o" \
         --source-file-list "$OUT/intent-sources.txt" \
         --swift-const-vals-list "$OUT/intent-const-vals.txt" \

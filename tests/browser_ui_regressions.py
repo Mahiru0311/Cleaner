@@ -562,6 +562,8 @@ forbid(build, "-emit-const-values-path", "no such flag: the const-values path co
 forbid(build, "awk '/^Xcode /{print $2; exit}'", "awk-exits-early SIGPIPE race on xcodebuild -version (run 42853617384)")
 require(build, "swift_const_gather_protocols.json", "protocols file for const gathering")
 require(build, "Metadata.appintents", "metadata lands in the .app")
+require(build, "--toolchain-dir", "processor needs the toolchain dir (run 42857021899)")
+require(build, "TOOLCHAIN_DIR", "toolchain dir derived from the active developer dir")
 require(build, "check_appintents_metadata.py", "build validates the metadata package")
 require(build, "build_app_binary Cleaner", "fallback: recompile as the app module and retry")
 require(build, "extract_app_intents Cleaner", "fallback extraction for the app module")

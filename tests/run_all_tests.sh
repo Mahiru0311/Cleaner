@@ -40,6 +40,7 @@ compile_run CLSafetyTests $CORE_SOURCES tests/CLSafetyTests.m
 compile_run CLCacheSafetyTests $CORE_SOURCES tests/CLCacheSafetyTests.m
 compile_run CLCacheMeasureTests $CORE_SOURCES tests/CLCacheMeasureTests.m
 compile_run CLCachePurgeTests $CORE_SOURCES tests/CLCachePurgeTests.m
+compile_run CLCustomCleanTests $CORE_SOURCES Core/CLCustomClean.m tests/CLCustomCleanTests.m
 compile_run CLGrantCopyTests $CORE_SOURCES tests/CLGrantCopyTests.m
 compile_run CLAppsCopyTests $CORE_SOURCES tests/CLAppsCopyTests.m
 compile_run CLAppSupportTests $CORE_SOURCES tests/CLAppSupportTests.m
@@ -58,7 +59,7 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
     printf '\n== Strict iOS arm64 syntax/link checks ==\n'
     IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
     MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Info.plist)
-    SOURCES=(Core/CLGrant.m Core/CLScan.m Core/CLCache.m Core/CLApp.m Core/CLLaunchServices.m App/CLUI.m App/CLCleanerViewController.m App/CLAppsViewController.m App/CLAppActions.m App/CLAppDirectoryViewController.m App/CLHomeViewController.m App/CLSettingsViewController.m App/CLLogViewController.m App/CLTabBarController.m App/main.m)
+    SOURCES=(Core/CLGrant.m Core/CLScan.m Core/CLCache.m Core/CLApp.m Core/CLLaunchServices.m Core/CLCustomClean.m App/CLUI.m App/CLCleanerViewController.m App/CLAppsViewController.m App/CLCustomCleanViewController.m App/CLAppActions.m App/CLAppDirectoryViewController.m App/CLHomeViewController.m App/CLSettingsViewController.m App/CLLogViewController.m App/CLTabBarController.m App/main.m)
     FLAGS=(-fobjc-arc -fmodules "-fmodules-cache-path=$OUT/modules-ios" -arch arm64 "-miphoneos-version-min=$MIN_OS" -isysroot "$IOS_SDK" -I Core -I App -Wall -Wextra -Werror -O2)
     xcrun --sdk iphoneos clang -fsyntax-only "${FLAGS[@]}" "${SOURCES[@]}" > "$OUT/ios-syntax.log" 2>&1 || {
         cat "$OUT/ios-syntax.log" >&2

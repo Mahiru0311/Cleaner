@@ -13,7 +13,64 @@
 #import <sys/stat.h>
 #import <unistd.h>
 
-CLMeasureResult cl_measure_tree(NSString *dir, CLScanCancellation *cancellation, unsigned long long *bytes)
+// fd-based tree walk (v2.3). Every entry is fstatat(AT_SYMLINK_NOFOLLOW)
+// off the parent's fd and every subdirectory is openat(O_NOFOLLOW) —
+// nothing is ever resolved through a path string, so there is no window
+// where a swapped symlink can redirect the walk (the WQFiles/NSFileManager
+// enumerator in v2.2 walked by path and could descend into a symlinked
+// directory, overcounting at best). Modelled on the fd traversal in
+// YangJiiii/3105 (GPL-3.0, see docs/GITHUB-RESEARCH-v2.3.md): open/openat/
+// fstatat/fdopendir/unlinkat, never follow links. topName is the first-level
+// subdirectory name for the optional subdir accounting.
+typedef struct {
+    unsigned long long bytes;
+    unsigned long long items;
+    BOOL limited;
+} CLMeasureAccum;
+
+static void cl_measure_fd(int dirfd, NSString *path, CLScanCancellation *cancellation,
+                          CLMeasureAccum *acc, NSString *topName, NSMutableDictionary *subdirs)
+{
+    int listing = dup(dirfd);
+    if (listing < 0) { acc->limited = YES; return; }
+    DIR *dir = fdopendir(listing);
+    if (!dir) { close(listing); acc->limited = YES; return; }
+    for (;;) {
+        if (cancellation.isCancelled) break;
+        errno = 0;
+        struct dirent *entry = readdir(dir);
+        if (!entry) { if (errno) acc->limited = YES; break; }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        NSString *name = [NSFileManager.defaultManager stringWithFileSystemRepresentation:entry->d_name
+                                                                                  length:strlen(entry->d_name)];
+        if (!name) { acc->limited = YES; continue; }
+        struct stat st;
+        if (fstatat(dirfd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) { acc->limited = YES; continue; }
+        if (S_ISREG(st.st_mode)) {
+            acc->bytes += (unsigned long long)st.st_size;
+            acc->items++;
+            if (topName && subdirs) {
+                NSNumber *old = subdirs[topName];
+                subdirs[topName] = @([old unsignedLongLongValue] + (unsigned long long)st.st_size);
+            }
+        } else if (S_ISDIR(st.st_mode)) {
+            NSString *childPath = [path stringByAppendingPathComponent:name];
+            int child = openat(dirfd, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+            if (child < 0 && cl_is_denied(errno) && cl_grant(childPath))
+                child = openat(dirfd, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+            if (child < 0) { acc->limited = YES; continue; }
+            struct stat cst;
+            if (fstat(child, &cst) != 0 || !CLSameObject(&st, &cst)) { close(child); acc->limited = YES; continue; }
+            cl_measure_fd(child, childPath, cancellation, acc, topName ?: name, subdirs);
+            close(child);
+        }
+        // Symlinks, sockets, devices, fifos: skipped, never followed.
+    }
+    closedir(dir);
+}
+
+CLMeasureResult cl_measure_tree_subdirs(NSString *dir, CLScanCancellation *cancellation, unsigned long long *bytes,
+                                        NSArray<NSDictionary *> *_Nullable *_Nullable subdirsOut)
 {
     if (cancellation.isCancelled) return CLMeasureResultCancelled;
     struct stat st = {0};
@@ -24,48 +81,35 @@ CLMeasureResult cl_measure_tree(NSString *dir, CLScanCancellation *cancellation,
         return CLMeasureResultLimited;
     }
     if (!S_ISDIR(st.st_mode)) return CLMeasureResultLimited;
-    // Cheap access probe: one open() instead of a full top-level listing.
-    // The old contentsOfDirectoryAtPath call ran a whole readdir pass and
-    // allocated a string per entry just to test whether the directory is
-    // readable — pure waste on every measured tree (v2.2).
-    int probe = open(dir.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_CLOEXEC);
-    if (probe < 0 && cl_grant(dir))
-        probe = open(dir.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_CLOEXEC);
-    if (probe >= 0) close(probe);
-
-    NSURL *root = [NSURL fileURLWithPath:dir isDirectory:YES];
-    NSArray<NSURLResourceKey> *keys = @[NSURLIsRegularFileKey, NSURLIsSymbolicLinkKey,
-                                       NSURLFileSizeKey, NSURLIsDirectoryKey];
-    __block BOOL limited = NO;
-    NSDirectoryEnumerator<NSURL *> *enumerator = [NSFileManager.defaultManager
-        enumeratorAtURL:root includingPropertiesForKeys:keys options:0
-           errorHandler:^BOOL(NSURL *errorURL, NSError *error) {
-        limited = YES;
-        cl_log(@"measure: cannot enumerate %@ (%@)", errorURL.path, error.localizedDescription ?: @"unknown error");
-        return YES;
-    }];
-    if (!enumerator) return CLMeasureResultLimited;
-
-    unsigned long long total = 0;
-    for (NSURL *item in enumerator) {
-        if (cancellation.isCancelled) return CLMeasureResultCancelled;
-        NSNumber *isLink = nil, *isRegular = nil, *size = nil;
-        NSError *error = nil;
-        if (![item getResourceValue:&isLink forKey:NSURLIsSymbolicLinkKey error:&error] ||
-            ![item getResourceValue:&isRegular forKey:NSURLIsRegularFileKey error:&error]) {
-            limited = YES;
-            continue;
-        }
-        if (isLink.boolValue || !isRegular.boolValue) continue;
-        if (![item getResourceValue:&size forKey:NSURLFileSizeKey error:&error]) {
-            limited = YES;
-            continue;
-        }
-        total += size.unsignedLongLongValue;
+    // cl_open_directory opens with O_NOFOLLOW after an ancestry check and
+    // grants access on denial — the fd walk's entry point.
+    int fd = cl_open_directory(dir);
+    if (fd < 0) {
+        if (errno == ENOENT || errno == ENOTDIR) return CLMeasureResultMissing;
+        return CLMeasureResultLimited;
     }
+    NSMutableDictionary *subdirTotals = subdirsOut ? [NSMutableDictionary new] : nil;
+    CLMeasureAccum acc = {0};
+    cl_measure_fd(fd, dir, cancellation, &acc, nil, subdirTotals);
+    close(fd);
     if (cancellation.isCancelled) return CLMeasureResultCancelled;
-    if (bytes) *bytes = total;
-    return limited ? CLMeasureResultLimited : CLMeasureResultKnown;
+    if (bytes) *bytes = acc.bytes;
+    if (subdirsOut) {
+        NSArray *sorted = [subdirTotals keysSortedByValueUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
+            return [b compare:a];
+        }];
+        NSMutableArray *top = [NSMutableArray new];
+        for (NSString *name in [sorted subarrayWithRange:NSMakeRange(0, MIN(5, (long)sorted.count))]) {
+            [top addObject:@{ @"name": name, @"bytes": subdirTotals[name] }];
+        }
+        *subdirsOut = [top copy];
+    }
+    return acc.limited ? CLMeasureResultLimited : CLMeasureResultKnown;
+}
+
+CLMeasureResult cl_measure_tree(NSString *dir, CLScanCancellation *cancellation, unsigned long long *bytes)
+{
+    return cl_measure_tree_subdirs(dir, cancellation, bytes, NULL);
 }
 
 // Purge uses fd-relative removal, so the path is only a swap detector. One
@@ -153,6 +197,160 @@ BOOL cl_purge_contents(NSString *dir, unsigned long long *freed)
     return cl_purge_contents_cancellable(dir, freed, nil);
 }
 
+// Per-folder cleaning (directory view swipe action) and custom cleaning
+// (folder rules). The folder must be a real directory inside the container
+// and must not be the container itself; the purge itself is the same
+// fd-relative, no-follow removal as cl_purge_contents.
+BOOL cl_purge_folder_contents(NSString *path, NSString *container, unsigned long long *freed,
+                              NSString **reason)
+{
+    if (!path.length || !container.length) {
+        if (reason) *reason = @"路径为空";
+        return NO;
+    }
+    NSString *canon = CLSafetyCanonicalPath(path);
+    NSString *canonContainer = CLSafetyCanonicalPath(container);
+    if ([canon isEqualToString:canonContainer]) {
+        if (reason) *reason = @"不能清空容器本身";
+        return NO;
+    }
+    if (![canon hasPrefix:[canonContainer stringByAppendingString:@"/"]]) {
+        if (reason) *reason = @"目标不在应用容器内";
+        return NO;
+    }
+    if (!CLSafetyHasNoSymlinkAncestry(path, NO)) {
+        if (reason) *reason = @"路径祖先不安全";
+        return NO;
+    }
+    struct stat st = {0};
+    if (lstat(path.fileSystemRepresentation, &st) != 0) {
+        if (errno == ENOENT) { if (freed) *freed = 0; return YES; }
+        if (reason) *reason = @"无法读取该文件夹";
+        return NO;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        if (reason) *reason = @"目标不是文件夹";
+        return NO;
+    }
+    unsigned long long removed = 0;
+    if (!cl_purge_contents_cancellable(path, &removed, nil)) {
+        if (reason) *reason = @"清理失败，部分内容可能残留";
+        return NO;
+    }
+    if (freed) *freed = removed;
+    return YES;
+}
+
+// YES when a container-relative path is an excluded path itself or below
+// one (excludes are folders: "Library/Caches/xxx" covers everything under it).
+static BOOL cl_clean_match_excluded(NSString *relativePath, NSArray<NSString *> *excludes)
+{
+    for (NSString *ex in excludes) {
+        if ([relativePath isEqualToString:ex] ||
+            [relativePath hasPrefix:[ex stringByAppendingString:@"/"]]) return YES;
+    }
+    return NO;
+}
+
+typedef struct {
+    NSArray<NSString *> *extensions;
+    NSArray<NSString *> *names;
+    NSArray<NSString *> *excludes;
+    NSString *container;
+    unsigned long long freed;
+    NSUInteger failed;
+    BOOL limited;
+} CLCleanMatch;
+
+static void cl_clean_match_fd(int dirfd, NSString *path, NSString *container, CLCleanMatch *m,
+                              CLScanCancellation *cancellation)
+{
+    int listing = dup(dirfd);
+    if (listing < 0) { m->limited = YES; return; }
+    DIR *dir = fdopendir(listing);
+    if (!dir) { close(listing); m->limited = YES; return; }
+    for (;;) {
+        if (cancellation.isCancelled) break;
+        errno = 0;
+        struct dirent *entry = readdir(dir);
+        if (!entry) { if (errno) m->limited = YES; break; }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        NSString *name = [NSFileManager.defaultManager stringWithFileSystemRepresentation:entry->d_name
+                                                                                  length:strlen(entry->d_name)];
+        if (!name) { m->limited = YES; continue; }
+        NSString *childPath = [path stringByAppendingPathComponent:name];
+        struct stat st;
+        if (fstatat(dirfd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) { m->failed++; continue; }
+        if (S_ISDIR(st.st_mode)) {
+            NSString *rel = [childPath substringFromIndex:container.length + 1];
+            if (cl_clean_match_excluded(rel, m->excludes)) continue;
+            int child = openat(dirfd, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+            if (child < 0 && cl_is_denied(errno) && cl_grant(childPath))
+                child = openat(dirfd, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+            if (child < 0) { m->failed++; continue; }
+            struct stat cst;
+            if (fstat(child, &cst) != 0 || !CLSameObject(&st, &cst)) { close(child); m->failed++; continue; }
+            cl_clean_match_fd(child, childPath, container, m, cancellation);
+            close(child);
+            // Empty directories are left in place (harmless); only matching
+            // files are deleted by extension/name rules.
+        } else if (S_ISREG(st.st_mode)) {
+            NSString *lower = name.lowercaseString;
+            BOOL match = NO;
+            for (NSString *ext in m->extensions) {
+                if (ext.length && [lower hasSuffix:ext.lowercaseString]) { match = YES; break; }
+            }
+            if (!match) {
+                for (NSString *sub in m->names) {
+                    if (sub.length && [lower containsString:sub.lowercaseString]) { match = YES; break; }
+                }
+            }
+            if (!match) continue;
+            struct stat cur;
+            if (fstatat(dirfd, entry->d_name, &cur, AT_SYMLINK_NOFOLLOW) != 0 ||
+                !CLSameObject(&st, &cur)) { m->failed++; continue; }
+            if (unlinkat(dirfd, entry->d_name, 0) == 0) m->freed += (unsigned long long)st.st_size;
+            else m->failed++;
+        }
+        // Links and special files: never followed, never deleted by a match rule.
+    }
+    closedir(dir);
+}
+
+BOOL cl_clean_matching_files(NSString *container, NSArray<NSString *> *extensions,
+                             NSArray<NSString *> *nameSubstrings,
+                             NSArray<NSString *> *excludedRelativePaths,
+                             unsigned long long *freed, NSUInteger *failed,
+                             NSString **reason)
+{
+    if (!container.length) {
+        if (reason) *reason = @"容器路径为空";
+        return NO;
+    }
+    if (!CLSafetyHasNoSymlinkAncestry(container, NO)) {
+        if (reason) *reason = @"容器路径不安全";
+        return NO;
+    }
+    CLCleanMatch m = { .extensions = extensions ?: @[], .names = nameSubstrings ?: @[],
+                       .excludes = excludedRelativePaths ?: @[], .container = container };
+    for (NSString *rel in @[@"Library/Caches", @"tmp"]) {
+        if (cl_clean_match_excluded(rel, m.excludes)) continue;
+        NSString *root = [container stringByAppendingPathComponent:rel];
+        int fd = cl_open_directory(root);
+        if (fd < 0) {
+            if (errno == ENOENT || errno == ENOTDIR) continue;
+            m.limited = YES;
+            continue;
+        }
+        cl_clean_match_fd(fd, root, container, &m, nil);
+        close(fd);
+    }
+    if (freed) *freed = m.freed;
+    if (failed) *failed = m.failed;
+    if (m.failed && reason) *reason = [NSString stringWithFormat:@"%lu 个文件删除失败", (unsigned long)m.failed];
+    return m.failed == 0;
+}
+
 // Flush a completed staging tree without following any links or opening special
 //
 //  WQCache.m
@@ -189,6 +387,33 @@ static CLCacheMeasurementState CLCacheMeasureDirectory(NSString *path,
             return CLCacheMeasurementMissing;
         case CLMeasureResultKnown:
             if (bytes) *bytes = total;
+            return CLCacheMeasurementKnown;
+        case CLMeasureResultCancelled:
+            return CLCacheMeasurementCancelled;
+        case CLMeasureResultLimited:
+            cl_log(@"cache scan: limited tree measurement for %@", path);
+            return CLCacheMeasurementLimited;
+    }
+    return CLCacheMeasurementLimited;
+}
+
+// Same, but also returns the top-5 first-level subdirectory sizes (v2.3) —
+// used for the Caches tree so the directory view can show a folder's size
+// without a second walk.
+static CLCacheMeasurementState CLCacheMeasureDirectorySubdirs(NSString *path,
+                                                             CLScanCancellation *cancellation,
+                                                             unsigned long long *bytes,
+                                                             NSArray<NSDictionary *> **subdirsOut)
+{
+    unsigned long long total = 0;
+    NSArray<NSDictionary *> *subdirs = nil;
+    CLMeasureResult result = cl_measure_tree_subdirs(path, cancellation, &total, subdirsOut ? &subdirs : NULL);
+    switch (result) {
+        case CLMeasureResultMissing:
+            return CLCacheMeasurementMissing;
+        case CLMeasureResultKnown:
+            if (bytes) *bytes = total;
+            if (subdirsOut) *subdirsOut = subdirs;
             return CLCacheMeasurementKnown;
         case CLMeasureResultCancelled:
             return CLCacheMeasurementCancelled;
@@ -278,7 +503,8 @@ static BOOL cl_measure_cache_lookup(NSDictionary *cache, NSString *container,
                                     const struct stat *containerStat,
                                     const struct stat *cachesStat, const struct stat *tmpStat,
                                     unsigned long long *cacheBytes, unsigned long long *tempBytes,
-                                    BOOL *cacheKnown, BOOL *tempKnown)
+                                    BOOL *cacheKnown, BOOL *tempKnown,
+                                    NSArray<NSDictionary *> **cacheSubdirs)
 {
     NSDictionary *e = cache[container];
     if (![e isKindOfClass:NSDictionary.class]) return NO;
@@ -299,6 +525,12 @@ static BOOL cl_measure_cache_lookup(NSDictionary *cache, NSString *container,
     // Only fully-known measurements are ever stored (see the store call):
     // a limited measurement must be retried next time, not replayed.
     if (!*cacheKnown || !*tempKnown) return NO;
+    // The Caches top-5 breakdown is cached with the sizes (v2.3); an entry
+    // written before v2.3 simply has no breakdown — still a valid hit.
+    if (cacheSubdirs) {
+        NSArray *subdirs = e[@"cacheSubdirs"];
+        *cacheSubdirs = [subdirs isKindOfClass:NSArray.class] ? subdirs : nil;
+    }
     return YES;
 }
 
@@ -306,7 +538,8 @@ static void cl_measure_cache_store(NSMutableDictionary *store, NSString *contain
                                    const struct stat *containerStat,
                                    const struct stat *cachesStat, const struct stat *tmpStat,
                                    unsigned long long cacheBytes, unsigned long long tempBytes,
-                                   BOOL cacheKnown, BOOL tempKnown)
+                                   BOOL cacheKnown, BOOL tempKnown,
+                                   NSArray<NSDictionary *> *cacheSubdirs)
 {
     store[container] = @{ @"device": @(containerStat->st_dev), @"inode": @(containerStat->st_ino),
         @"cachesMtime": @(cachesStat->st_mtimespec.tv_sec), @"cachesMtimeNs": @(cachesStat->st_mtimespec.tv_nsec),
@@ -315,6 +548,7 @@ static void cl_measure_cache_store(NSMutableDictionary *store, NSString *contain
         @"tmpSize": @(tmpStat->st_size),
         @"cacheBytes": @(cacheBytes), @"tempBytes": @(tempBytes),
         @"cacheKnown": @(cacheKnown), @"tempKnown": @(tempKnown),
+        @"cacheSubdirs": cacheSubdirs ?: @[],
         @"savedAt": @(NSDate.date.timeIntervalSinceReferenceDate) };
 }
 
@@ -404,6 +638,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
 @property (nonatomic, copy) NSArray<CLCacheItem *> *items;
 @property (nonatomic) unsigned long long totalBytes;
 @property (nonatomic) NSUInteger appCount;
+@property (nonatomic) NSUInteger totalAppCount;
 @property (nonatomic) BOOL limited;
 @property (nonatomic) NSTimeInterval lastScanFinished;
 @end
@@ -418,7 +653,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
     return shared;
 }
 
-- (void)updateWithItems:(NSArray<CLCacheItem *> *)items limited:(BOOL)limited
+- (void)updateWithItems:(NSArray<CLCacheItem *> *)items limited:(BOOL)limited totalApps:(NSUInteger)totalApps
 {
     _items = [items copy];
     unsigned long long total = 0;
@@ -429,6 +664,10 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
     }
     _totalBytes = total;
     _appCount = apps;
+    // totalApps is the count of containers actually measured (v2.3). appCount
+    // above drops apps under 64 KB — after a clean every app is ~0 bytes and
+    // appCount falls to 0, which is what the home showed (the v2.3 bug).
+    _totalAppCount = totalApps;
     _limited = limited;
     _scanning = NO;
     _lastScanFinished = NSDate.date.timeIntervalSinceReferenceDate;
@@ -445,6 +684,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
     // nothing once any scan had finished (v2.2). `scanning` is left alone:
     // a scan that is still running must still block a second one.
     _lastScanFinished = 0;
+    _totalAppCount = 0;
 }
 
 @end
@@ -463,6 +703,9 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
 @property (nonatomic, strong) NSLock *lock;
 @property (nonatomic, strong) NSMutableArray<CLCacheItem *> *items;
 @property (nonatomic) NSUInteger completedCount;
+// Every container measured (including sub-64 KB ones that produce no row).
+// The home's app count comes from this (v2.3), not from the row count.
+@property (nonatomic) NSUInteger totalContainers;
 @property (nonatomic) NSUInteger deliveredItemCount;
 @property (nonatomic) BOOL scanLimited;
 @property (nonatomic) NSUInteger limitedContainers;
@@ -482,7 +725,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
 }
 
 - (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
-               completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled))completion
+               completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled, NSUInteger totalApps))completion
 {
     [self startWithProgress:progress itemsUpdate:nil completion:completion];
 }
@@ -515,10 +758,11 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
     CLCachePathState tmpState = CLCacheInspectPath(tmp, &tmpStat);
     unsigned long long cacheBytes = 0, tempBytes = 0;
     BOOL cacheKnown = NO, tempKnown = NO;
+    NSArray<NSDictionary *> *cacheSubdirs = nil;
     BOOL fromCache = NO;
     if (containerKnown && cachesState == CLCachePathExisting && tmpState == CLCachePathExisting) {
         fromCache = cl_measure_cache_lookup(ctx.measureCache, c, &containerStat, &cachesStat, &tmpStat,
-                                            &cacheBytes, &tempBytes, &cacheKnown, &tempKnown);
+                                            &cacheBytes, &tempBytes, &cacheKnown, &tempKnown, &cacheSubdirs);
     }
     CLCacheMeasurementState cacheState, tempState;
     if (fromCache) {
@@ -529,7 +773,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
         [ctx.lock unlock];
     } else {
         cacheState = granted && safeCaches
-            ? CLCacheMeasureDirectory(caches, cancellation, &cacheBytes)
+            ? CLCacheMeasureDirectorySubdirs(caches, cancellation, &cacheBytes, &cacheSubdirs)
             : CLCacheMeasurementLimited;
         if (cacheState == CLCacheMeasurementCancelled) return nil;
         tempState = granted && safeTmp
@@ -544,7 +788,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
             cachesState == CLCachePathExisting && tmpState == CLCachePathExisting) {
             [ctx.lock lock];
             cl_measure_cache_store(ctx.measureStore, c, &containerStat, &cachesStat, &tmpStat,
-                                   cacheBytes, tempBytes, cacheKnown, tempKnown);
+                                   cacheBytes, tempBytes, cacheKnown, tempKnown, cacheSubdirs);
             [ctx.lock unlock];
         }
     }
@@ -568,6 +812,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
     item.targets = @[caches, tmp];
     item.cacheBytes = cacheBytes;
     item.tempBytes = tempBytes;
+    item.cacheSubdirs = cacheSubdirs;
     item.cacheKnown = cacheKnown;
     item.tempKnown = tempKnown;
     item.limited = !cacheKnown || !tempKnown;
@@ -595,7 +840,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
 
 - (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
               itemsUpdate:(void (^_Nullable)(NSArray<CLCacheItem *> *newItems))itemsUpdate
-               completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled))completion
+               completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled, NSUInteger totalApps))completion
 {
     [self cancel];
     CLScanCancellation *cancellation = [CLScanCancellation new];
@@ -615,13 +860,13 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
         NSArray *roots = @[@"/private/var/mobile/Containers/Data/Application",
                            @"/private/var/mobile/Containers/Data/PluginKitPlugin"];
         for (NSString *root in roots) {
-            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES); return; }
+            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalContainers); return; }
             NSString *kind = [root.lastPathComponent isEqualToString:@"Application"] ? @"应用" : @"扩展";
             NSArray *containers = cl_enumerate(root, 0, cancellation, ^(int64_t done, int64_t total, NSUInteger __unused f) {
                 if (progress) progress([NSString stringWithFormat:@"正在查找%@… %lld%%", kind, (long long)(done * 100 / (total ?: 1))]);
             });
             if (!containers) {
-                if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES); return; }
+                if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalContainers); return; }
                 ctx.scanLimited = YES;
                 failedEnumerations++;
                 cl_log(@"cache scan: %@ container enumeration failed", kind);
@@ -652,6 +897,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
                     [ctx.lock lock];
                     if (item) [ctx.items addObject:item];
                     ctx.completedCount++;
+                    ctx.totalContainers++;
                     NSUInteger doneInRoot = ctx.completedCount - baseCompleted;
                     // Deliver finished rows in batches of 8 (sorted by
                     // size inside the batch) so the list fills in while
@@ -674,7 +920,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
                     }
                 }
             });
-            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES); return; }
+            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalContainers); return; }
         }
         unsigned long long crash = 0;
         // Crash logs are in a system group, which worse_query reaches on iOS 27
@@ -684,7 +930,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
         CLCacheMeasurementState crashState = !crashReachable ? CLCacheMeasurementMissing
             : safeCrashPath ? CLCacheMeasureDirectory(CLCrashLogsPath, cancellation, &crash)
                             : CLCacheMeasurementLimited;
-        if (crashState == CLCacheMeasurementCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES); return; }
+        if (crashState == CLCacheMeasurementCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.totalContainers); return; }
         if (crashState == CLCacheMeasurementLimited) {
             ctx.scanLimited = YES;
             ctx.limitedMeasurements++;
@@ -737,7 +983,7 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
         cl_log(@"cache scan: %lu items in %.1f s (%lu from the measurement cache)",
                (unsigned long)ctx.items.count, CFAbsoluteTimeGetCurrent() - scanStarted,
                (unsigned long)ctx.measureCacheHits);
-        if (completion) completion([ctx.items copy], ctx.scanLimited, note, NO);
+        if (completion) completion([ctx.items copy], ctx.scanLimited, note, NO, ctx.totalContainers);
     });
 }
 

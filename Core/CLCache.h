@@ -33,6 +33,31 @@ BOOL cl_purge_contents(NSString *dir, unsigned long long *freed);
 BOOL cl_purge_contents_cancellable(NSString *dir, unsigned long long *freed,
                                    CLScanCancellation *_Nullable cancellation);
 
+// fd-based size measurement of a tree, never following symlinks (v2.3,
+// borrowed from YangJiiii/3105 — see docs/GITHUB-RESEARCH-v2.3.md). *bytes
+// receives the total (0 when missing/limited); *subdirsOut, when non-NULL,
+// receives the top-5 first-level subdirectories as @{@"name", @"bytes"}.
+CLMeasureResult cl_measure_tree_subdirs(NSString *dir, CLScanCancellation *_Nullable cancellation,
+                                        unsigned long long *bytes,
+                                        NSArray<NSDictionary *> *_Nullable *_Nullable subdirsOut);
+
+// Delete the contents of a folder inside a container (never the container
+// itself, never through a symlink), for per-folder cleaning and custom
+// cleaning. *freed receives the bytes removed. NO with *reason in Chinese.
+BOOL cl_purge_folder_contents(NSString *path, NSString *container, unsigned long long *_Nullable freed,
+                              NSString *_Nullable *_Nullable reason);
+
+// Delete regular files matching extensions (e.g. @[@".mp4", @".log"]) or name
+// substrings inside a container's Library/Caches and tmp only — the custom
+// cleaning engine. Files under an excluded relative path are skipped.
+// *freed receives the bytes removed; *failed the count of entries that
+// could not be deleted.
+BOOL cl_clean_matching_files(NSString *container, NSArray<NSString *> *_Nullable extensions,
+                             NSArray<NSString *> *_Nullable nameSubstrings,
+                             NSArray<NSString *> *_Nullable excludedRelativePaths,
+                             unsigned long long *_Nullable freed, NSUInteger *_Nullable failed,
+                             NSString *_Nullable *_Nullable reason);
+
 // fd-relative removal shared with CLGrant's copy_contents (same-file staging).
 // *freed is optional (callers cleaning a partial stage pass NULL).
 BOOL cl_remove_entry(int parent, NSString *name, NSString *path, unsigned long long *_Nullable freed,
@@ -54,6 +79,9 @@ BOOL cl_remove_entry(int parent, NSString *name, NSString *path, unsigned long l
 @property (nonatomic, copy) NSArray<NSString *> *targets;  // dirs to purge
 @property (nonatomic) unsigned long long cacheBytes;
 @property (nonatomic) unsigned long long tempBytes;
+// Top-5 Caches subdirectories, each @{@"name": NSString, @"bytes": NSNumber}
+// (v2.3) — the directory view shows them instead of guessing a folder's size.
+@property (nonatomic, copy) NSArray<NSDictionary *> *cacheSubdirs;
 @property (nonatomic) BOOL cacheKnown;
 @property (nonatomic) BOOL tempKnown;
 @property (nonatomic) BOOL limited;
@@ -86,12 +114,17 @@ extern NSString *const CLCacheStoreDidUpdateNotification;
 @property (nonatomic, copy, readonly) NSArray<CLCacheItem *> *items;
 @property (nonatomic, readonly) unsigned long long totalBytes;
 @property (nonatomic, readonly) NSUInteger appCount;
+// Total containers measured in the last scan (v2.3). Unlike appCount, this
+// does not drop apps whose cache is under 64KB — so after a clean, when
+// every app is ~0 bytes and appCount falls to 0, the home still shows the
+// real app total (114). See docs/GITHUB-RESEARCH-v2.3.md §5 / REFACTOR-v2 §10.
+@property (nonatomic, readonly) NSUInteger totalAppCount;
 @property (nonatomic, readonly) BOOL limited;
 @property (nonatomic, readonly) NSTimeInterval lastScanFinished;
 // YES while any page is scanning (Home skips starting a second scan).
 @property (nonatomic) BOOL scanning;
 + (instancetype)shared;
-- (void)updateWithItems:(NSArray<CLCacheItem *> *)items limited:(BOOL)limited;
+- (void)updateWithItems:(NSArray<CLCacheItem *> *)items limited:(BOOL)limited totalApps:(NSUInteger)totalApps;
 // Forget the shared container scan + name database, and mark the store's
 // last scan as stale, so the next scan is fresh.
 - (void)invalidateScan;
@@ -105,7 +138,7 @@ extern NSString *const CLCacheStoreDidUpdateNotification;
 @interface CLCacheScanner : NSObject
 // progress is optional (Home passes nil; all call sites nil-check it).
 - (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
-               completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled))completion;
+               completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled, NSUInteger totalApps))completion;
 // Same scan, but finished items are also delivered in batches (sorted by
 // size, largest first) as soon as they are measured, so rows appear while
 // the scan is still running instead of all at once at the end. itemsUpdate
@@ -114,7 +147,7 @@ extern NSString *const CLCacheStoreDidUpdateNotification;
 // fully sorted list, which the caller treats as authoritative.
 - (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
               itemsUpdate:(void (^_Nullable)(NSArray<CLCacheItem *> *newItems))itemsUpdate
-               completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled))completion;
+               completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled, NSUInteger totalApps))completion;
 - (void)cancel;
 @end
 

@@ -2,6 +2,7 @@
 #import "../Core/CLCache.h"
 #import "../Core/CLScan.h"
 #import "../Core/CLSafety.h"
+#import "../Core/CLGrant.h"
 #include <stdlib.h>
 SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator) { (void)allocator; return NULL; }
 CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef entitlement, CFErrorRef *error)

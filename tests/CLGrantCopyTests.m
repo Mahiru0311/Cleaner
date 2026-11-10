@@ -1,6 +1,7 @@
 #define CL_ACCESS_TESTING 1
 #import "../Core/CLGrant.h"
 #import "../Core/CLCache.h"
+#import "../Core/CLSafety.h"
 #include <stdlib.h>
 SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator) { (void)allocator; return NULL; }
 CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef entitlement, CFErrorRef *error)

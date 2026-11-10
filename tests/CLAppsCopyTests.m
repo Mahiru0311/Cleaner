@@ -3,6 +3,7 @@
 #define CL_ACCESS_TESTING 1
 #import "../Core/CLGrant.h"
 #import "../Core/CLAppSupport.h"
+#import "../Core/CLSafety.h"
 #include <stdlib.h>
 
 SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator) { (void)allocator; return NULL; }

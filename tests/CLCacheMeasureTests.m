@@ -3,6 +3,7 @@
 #define CL_ACCESS_TESTING 1
 #import "../Core/CLCache.h"
 #import "../Core/CLScan.h"
+#import "../Core/CLSafety.h"
 #include <stdlib.h>
 #include <sys/stat.h>
 

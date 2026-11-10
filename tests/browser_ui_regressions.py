@@ -383,9 +383,14 @@ require(build, "CleanerIntents.o", "Swift object linked into the app binary")
 # references still lost CleanerShortcuts (runs 42824508382 /
 # 42825022774) — so swiftc now uses -Onone and the link drops -flto.
 require(build, "-Onone", "swiftc compiles the intent file without optimisation")
-require(build, "[$]s[0-9]+CleanerIntents[0-9]+CleanCacheIntentV", "build checks the mangled CleanCacheIntent symbol")
-require(build, "[$]s[0-9]+CleanerIntents[0-9]+CleanerShortcutsV", "build checks the mangled CleanerShortcuts symbol")
-require(build, "appShortcuts", "build checks the appShortcuts witness in the binary")
+# WORD SUBSTITUTION (run 42825889428): "CleanerShortcuts" is mangled as
+# $s14CleanerIntents0A9ShortcutsV ("Cleaner" -> 0A) and "appShortcuts" as
+# 03appC0 — the literal strings never appear. The old greps looked for
+# the literals and failed on five builds even though the types were
+# present all along.
+require(build, "[$]s14CleanerIntents16CleanCacheIntentV", "build checks the mangled CleanCacheIntent symbol")
+require(build, "[$]s14CleanerIntents0A9ShortcutsV", "build checks the mangled CleanerShortcuts symbol (word-substituted form)")
+require(build, "0A9ShortcutsV03appC0", "build checks the appShortcuts witness (substituted mangled form)")
 # The symbol check must run BEFORE strip: strip -x removes the local
 # symbols (v2.4 binary: 415 global, 1 local), so a post-strip symbol grep
 # measures strip, not the types — it failed a build that had the types.
@@ -393,6 +398,8 @@ if not (build.index("CleanCacheIntentV") < build.index('strip -x "$APP/Cleaner"'
     raise AssertionError("intent symbol check must come before strip -x")
 forbid(build, 'grep -a -q "CleanCacheIntent" "$app_path/Cleaner"', "bare-name grep is gone (it passed on the broken v2.4 binary)")
 forbid(build, 'grep -a -q "CleanerShortcuts" "$app_path/Cleaner"', "bare-name grep is gone (it passed on the broken v2.4 binary)")
+forbid(build, "[$]s[0-9]+CleanerIntents[0-9]+CleanerShortcutsV", "the literal-name mangled grep is gone (word substitution: the real symbol is 0A9ShortcutsV)")
+forbid(build, 'grep -a -q "appShortcuts"', "the literal appShortcuts grep is gone (word substitution: the real form is 03appC0)")
 forbid(build, "# no -dead_strip risk here — main.m references CLIntentsBootstrap, which references the intent types.", "the wrong dead-strip comment is gone")
 require(intents, "CLCleanerShortcutsInfo", "shortcuts info exposes the registered shortcuts to UIKit")
 require(intents, "CleanerShortcuts.appShortcuts", "intent types are really used: the guide reads the registered shortcuts")

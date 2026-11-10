@@ -25,13 +25,17 @@
 //  re-run is cheap — the measurement cache is warm and the already-clean
 //  apps measure ~0.
 //
-//  CLIntentsBootstrap.keepAlive() is called from main.m, but keepAlive
-//  alone does NOT keep the types linked (v2.4 lesson): under -O + LTO +
-//  -dead_strip the optimizer deleted the side-effect-free metadata
-//  references and the intent types vanished from the binary. What keeps
-//  them is CLCleanerShortcutsInfo below: the Settings guide reads the
-//  registered shortcuts through it and shows their titles, a real data
-//  flow to UIKit that the optimizer cannot delete.
+//  CLIntentsBootstrap.keepAlive() is called from main.m. Whether
+//  keepAlive alone keeps the types linked was never actually proven:
+//  the v2.4 "optimizer removed the types" conclusion rested on greps
+//  for the LITERAL mangled names ("CleanerShortcutsV", "appShortcuts"),
+//  which never appear in any binary — Swift's mangler substitutes the
+//  word "Cleaner" (see build.sh). The v2.5 diagnostic dump (run
+//  42825889428) proved the types ARE in the linked binary. What
+//  guarantees it stays that way is the pre-strip check in build.sh,
+//  which greps the real (word-substituted) mangled symbols. The guide
+//  page still reads the registered shortcuts through
+//  CLCleanerShortcutsInfo below, so the user can see the live status.
 
 import AppIntents
 import Foundation
@@ -99,46 +103,26 @@ public final class CLIntentsBootstrap: NSObject {
     }
 }
 
-// v2.5 — the REAL reason the intent types survive the linker, not
-// keepAlive: the Settings Shortcuts guide reads the registered shortcuts
-// through this class and shows their titles on screen. keepAlive alone
-// did NOT work: in v2.4 it only wrote `_ = CleanCacheIntent.self`, and
-// under -O + LTO + -dead_strip the optimizer deleted the side-effect-free
-// metadata references and then the types and their protocol conformances
-// entirely — the v2.4 binary had no CleanCacheIntent / CleanerShortcuts
-// symbols at all (only the 8 CLIntentsBootstrap symbols), and the
-// Shortcuts app found nothing.
-// WARNING — the data flow alone was STILL not enough: the first v2.5 build
-// (run 42823044882) lost the types again, because -O constant-folded the
-// flow (appShortcuts is a literal 1-element array, the title is a
-// constant), so the references never reached the object file. What makes
-// the flow survive is @_optimize(none) on the two methods below, PLUS no
-// -dead_strip at link time (build.sh). Do not "simplify" this back to a
-// keepAlive-only call, and do not remove @_optimize(none).
+// v2.5 — the Settings Shortcuts guide reads the registered shortcuts
+// through this class and shows their titles on screen. @_optimize(none)
+// and the explicit metatype references below are kept as belt and
+// braces, but they are NOT what keeps the types linked: five v2.5 builds
+// "lost" CleanerShortcuts at the build check while the types were present
+// all along — the check grepped for literal mangled names that Swift's
+// word substitution never emits (see build.sh). The pre-strip check in
+// build.sh, grepping the real mangled symbols, is the real protection:
+// if a future change really drops the types, the build fails loudly
+// instead of shipping a shortcut the Shortcuts app cannot see.
 @objc(CLCleanerShortcutsInfo)
 public final class CLCleanerShortcutsInfo: NSObject {
-    // @_optimize(none) is load-bearing, not cosmetic — do not remove it.
-    // Without it, swiftc -O constant-folds these methods: appShortcuts is
-    // a literal 1-element array and CleanCacheIntent.title is a constant,
-    // so the optimizer proves the types are unneeded and eliminates them
-    // from the object file entirely (that is how v2.4 lost the intent, and
-    // how the first v2.5 build lost it again despite the "real data flow").
-    // With optimization off, the method bodies genuinely load the provider
-    // and the intent, so their metadata survives into the object file.
-    // validate_app still verifies the final binary — if a future Swift
-    // ignores this attribute, the build fails loudly instead of shipping
-    // a shortcut the Shortcuts app cannot see.
+    // @_optimize(none) is kept (harmless, and it stops the methods being
+    // constant-folded), but it is not load-bearing: the types survive
+    // because they are genuinely referenced, and the build verifies the
+    // real mangled symbols pre-strip.
     @_optimize(none)
     @objc public static var shortcutCount: Int {
-        // Explicit metatype references: the data flow alone keeps
-        // CleanCacheIntent (it is instantiated in the provider) but NOT
-        // CleanerShortcuts — the provider type itself is never instantiated,
-        // only its static property is read, and the compiler resolves that
-        // without the type's metadata. These references are what keep the
-        // provider type (and its AppShortcutsProvider conformance) in the
-        // binary. They work ONLY because this method is @_optimize(none):
-        // keepAlive tried the same `_ = X.self` trick in v2.4 without it,
-        // and the optimizer deleted the side-effect-free references.
+        // Explicit metatype references (belt and braces — the data flow
+        // below already references both types).
         _ = CleanerShortcuts.self
         _ = CleanCacheIntent.self
         return CleanerShortcuts.appShortcuts.count

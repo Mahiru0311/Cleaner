@@ -83,26 +83,18 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 # cannot delete a flow that ends in a UIKit label. keepAlive is kept as
 # a belt-and-braces call, but it is NOT the protection. validate_app
 # below now checks the mangled symbols, not the bare names.
-# NOTE (v2.5, runs 42823044882 / 42824508382 / 42825022774): the first
-# v2.5 builds STILL lost the types. What did NOT work, in order:
-# (1) the real data flow (guide reads appShortcuts) — swiftc -O
-# constant-folded it (appShortcuts is a literal 1-element array, the
-# title is a constant), so the references never reached the object file;
-# (2) @_optimize(none) on CLCleanerShortcutsInfo's computed properties
-# plus explicit `_ = CleanerShortcuts.self` metatype references — the
-# pre-strip check then PASSED CleanCacheIntent but STILL failed
-# CleanerShortcuts. CleanerShortcuts is never instantiated (only its
-# static property is read), so its metadata is not needed by the code,
-# and the attribute is a function-level one that may not apply to a
-# property getter at all; -flto then re-optimizes across modules at link
-# time and can delete what swiftc kept. So the fix is at the flag level,
-# not the code level: swiftc compiles the intent file with -Onone (no
-# Swift optimisation at all — the file is tiny, performance is
-# irrelevant), and the link drops -flto (keeps -Os for the ObjC compile).
-# -dead_strip stays removed. Do NOT re-add -O for swiftc, -flto, or
-# -dead_strip without re-verifying the mangled symbols in the built
-# binary. If the IPA grows past the 250KB target, revisit — but a
-# shortcut the Shortcuts app cannot see is worse than a few KB.
+# NOTE (v2.5, runs 42823044882 / 42824508382 / 42825022774 / 42825431199):
+# the first v2.5 builds all "lost" CleanerShortcuts at the pre-strip
+# check — but the types were NEVER lost. The check was wrong: it grepped
+# for the literal mangled name "CleanerShortcutsV", which never appears
+# (word substitution — see the check below). The data flow, @_optimize(none),
+# metatype references, -Onone and dropping -flto were all chasing a
+# phantom optimizer bug that did not exist. -Onone (swiftc) and no -flto
+# are KEPT anyway — harmless for a tiny Swift file, and they remove
+# variables — but they are NOT the fix. Do NOT re-add -dead_strip without
+# re-verifying the mangled symbols in the built binary. If the IPA grows
+# past the 250KB target, revisit — but a shortcut the Shortcuts app
+# cannot see is worse than a few KB.
 xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -Onone -swift-version 5 \
     -parse-as-library -module-name CleanerIntents \
     -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
@@ -120,42 +112,32 @@ xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/Modul
     App/CLHomeViewController.m App/CLSettingsViewController.m App/CLLogViewController.m \
     App/CLRulePickerViewController.m App/CLShortcutsGuideViewController.m \
     App/CLTabBarController.m App/main.m "$OUT/CleanerIntents.o" -o "$APP/Cleaner"
-# App Intent check — BEFORE strip (v2.5, run 42823793730 lesson). The
-# mangled-symbol check MUST run here, on the just-linked binary, not in
-# validate_app: `strip -x` below removes essentially all local symbols
-# (the v2.4 binary's symbol table has 415 global symbols and 1 local),
-# and Swift struct metadata symbols are local — strip deletes them even
-# when the types are present and working. Only @objc class symbols
-# (CLIntentsBootstrap) survive strip, which is why the v2.4 binary showed
-# those 8 and nothing else. So a post-strip symbol grep measures strip,
-# not the types: it failed the first v2.5 build that had the types in the
-# code. Here, pre-strip, the symbols are intact: the mangled symbols
-# ([$]s…V) and the appShortcuts witness prove the types really made it
-# into the linked binary. The length digits are matched loosely ([0-9]+)
-# so the check does not depend on counting the identifier length by hand:
-# "CleanerShortcuts" is 16 characters (Cleaner 7 + Shortcuts 9), and the
-# v2.4 binary's surviving $s14CleanerIntents18CLIntentsBootstrapC (18
-# chars) confirms the length-prefix rule — an earlier note wrote 17 for
-# CleanerShortcuts, which is a miscount; either way the regex matches,
-# and the real emitted symbol is confirmed when the built IPA is verified.
-# Bare names are NOT checked here: the v2.4 binary still contained the
-# plain strings "CleanCacheIntent" and "CleanerShortcuts" (1 each) while
-# the types themselves were gone — grepping a bare name passed on a binary
-# with no intent in it, and the Shortcuts app found nothing.
-# DIAGNOSTIC (v2.5, run 42825431199): the pre-strip check still fails
-# on CleanerShortcuts even with swiftc -Onone and no -flto, so the
-# "optimizer removed it" theory is dead — the symbol may never be
-# emitted, or under a different name. Dump every CleanerIntents mangled
-# symbol in the linked binary to the log so the next fix is based on
-# what is actually there, not on a theory. Remove once resolved.
-echo "--- CleanerIntents symbols in linked binary ---"
-grep -a -o '[$]s[0-9]*CleanerIntents[A-Za-z0-9_]*' "$APP/Cleaner" | sort -u || true
-echo "--- end CleanerIntents symbols ---"
-grep -aE -q '[$]s[0-9]+CleanerIntents[0-9]+CleanCacheIntentV' "$APP/Cleaner" || \
-    fail "linked binary is missing the CleanCacheIntent type (no mangled symbol — the Swift optimizer may have removed it)"
-grep -aE -q '[$]s[0-9]+CleanerIntents[0-9]+CleanerShortcutsV' "$APP/Cleaner" || \
-    fail "linked binary is missing the CleanerShortcuts provider (no mangled symbol — the Swift optimizer may have removed it)"
-grep -a -q "appShortcuts" "$APP/Cleaner" || \
+# App Intent check — BEFORE strip (v2.5). The mangled-symbol check MUST
+# run here, on the just-linked binary, not in validate_app: `strip -x`
+# removes the local symbols, and Swift struct metadata symbols are local
+# (the v2.4 binary's symbol table has 415 global symbols and 1 local).
+# Only the AppIntents link is checked in validate_app; the intent types
+# are verified here, pre-strip, where the symbols are intact.
+# WORD SUBSTITUTION (v2.5, run 42825889428 — the real lesson): Swift's
+# mangler substitutes words already seen. The module is "CleanerIntents"
+# (words: Cleaner, Intents), so "CleanerShortcuts" is mangled as
+# $s14CleanerIntents0A9ShortcutsV — "Cleaner" becomes the substitution
+# 0A, only "Shortcuts" is spelled out — and "appShortcuts" as
+# 03appC0. The literal strings "CleanerShortcutsV" and "appShortcuts"
+# NEVER appear in the binary. The old greps looked for those literals,
+# so they failed on every v2.5 build even though the types were present
+# all along — five runs (42823044882 / 42824508382 / 42825022774 /
+# 42825431199 / 42825889428) chased a phantom optimizer bug that did
+# not exist. The diagnostic dump in run 42825889428 proved the types
+# are in the binary (full CleanerShortcuts metadata, descriptor,
+# appShortcuts accessor, AppShortcutsProvider witnesses). "CleanCacheIntent"
+# is spelled out in full (16 chars) because "Clean" is not the word
+# "Cleaner", so no substitution applies to it.
+grep -aE -q '[$]s14CleanerIntents16CleanCacheIntentV' "$APP/Cleaner" || \
+    fail "linked binary is missing the CleanCacheIntent type (no mangled symbol)"
+grep -aE -q '[$]s14CleanerIntents0A9ShortcutsV' "$APP/Cleaner" || \
+    fail "linked binary is missing the CleanerShortcuts provider (no mangled symbol)"
+grep -a -q '0A9ShortcutsV03appC0' "$APP/Cleaner" || \
     fail "linked binary has no appShortcuts witness"
 xcrun --sdk iphoneos strip -x "$APP/Cleaner"
 cp Info.plist "$APP/Info.plist"

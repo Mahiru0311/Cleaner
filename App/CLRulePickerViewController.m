@@ -184,7 +184,7 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
         return;
     }
     self.tableView.tableHeaderView = nil;
-    UIBarButtonItem *confirm = [[UIBarButtonItem alloc] initWithTitle:@"选择" style:UIBarButtonItemStyleDone
+    UIBarButtonItem *confirm = [[UIBarButtonItem alloc] initWithTitle:@"选择" style:UIBarButtonItemStylePlain
                                                                 target:self action:@selector(confirmTapped)];
     self.navigationItem.rightBarButtonItem = confirm;
     if (!_path.length) _path = _app.containerPath;
@@ -395,24 +395,39 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
             // Filter rows (only when 按条件删): extension, name, age, min, max.
             switch (indexPath.row) {
                 case 2: {
-                    return [self cellWithTextField:@"filter-ext" placeholder:@"扩展名，如 .mp4,.mov"
-                                          keyboard:UIKeyboardTypeDefault field:&_extField prefill:_prefillExt];
+                    UITextField *field = nil;
+                    UITableViewCell *fc = [self cellWithTextField:@"filter-ext" placeholder:@"扩展名，如 .mp4,.mov"
+                                                         keyboard:UIKeyboardTypeDefault field:&field prefill:_prefillExt];
+                    if (field) _extField = field;
+                    return fc;
                 }
                 case 3: {
-                    return [self cellWithTextField:@"filter-name" placeholder:@"文件名包含，如 thumb"
-                                          keyboard:UIKeyboardTypeDefault field:&_nameField prefill:_prefillName];
+                    UITextField *field = nil;
+                    UITableViewCell *fc = [self cellWithTextField:@"filter-name" placeholder:@"文件名包含，如 thumb"
+                                                         keyboard:UIKeyboardTypeDefault field:&field prefill:_prefillName];
+                    if (field) _nameField = field;
+                    return fc;
                 }
                 case 4: {
-                    return [self cellWithTextField:@"filter-age" placeholder:@"仅删 N 天前的文件"
-                                          keyboard:UIKeyboardTypeDecimalPad field:&_ageField prefill:_prefillAge];
+                    UITextField *field = nil;
+                    UITableViewCell *fc = [self cellWithTextField:@"filter-age" placeholder:@"仅删 N 天前的文件"
+                                                         keyboard:UIKeyboardTypeDecimalPad field:&field prefill:_prefillAge];
+                    if (field) _ageField = field;
+                    return fc;
                 }
                 case 5: {
-                    return [self cellWithTextField:@"filter-min" placeholder:@"仅删大于 N KB 的文件"
-                                          keyboard:UIKeyboardTypeDecimalPad field:&_minField prefill:_prefillMin];
+                    UITextField *field = nil;
+                    UITableViewCell *fc = [self cellWithTextField:@"filter-min" placeholder:@"仅删大于 N KB 的文件"
+                                                         keyboard:UIKeyboardTypeDecimalPad field:&field prefill:_prefillMin];
+                    if (field) _minField = field;
+                    return fc;
                 }
                 default: {
-                    return [self cellWithTextField:@"filter-max" placeholder:@"仅删小于 N KB 的文件"
-                                          keyboard:UIKeyboardTypeDecimalPad field:&_maxField prefill:_prefillMax];
+                    UITextField *field = nil;
+                    UITableViewCell *fc = [self cellWithTextField:@"filter-max" placeholder:@"仅删小于 N KB 的文件"
+                                                         keyboard:UIKeyboardTypeDecimalPad field:&field prefill:_prefillMax];
+                    if (field) _maxField = field;
+                    return fc;
                 }
             }
         }
@@ -462,9 +477,12 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
         }
         default: {
             if (indexPath.row == 0) {
-                return [self cellWithTextField:@"manual-path"
-                                   placeholder:@"Library/Caches/xxx 或完整路径"
-                                      keyboard:UIKeyboardTypeDefault field:&_manualField prefill:@""];
+                UITextField *field = nil;
+                UITableViewCell *fc = [self cellWithTextField:@"manual-path"
+                                                  placeholder:@"Library/Caches/xxx 或完整路径"
+                                                     keyboard:UIKeyboardTypeDefault field:&field prefill:@""];
+                if (field) _manualField = field;
+                return fc;
             }
             cell = [tableView dequeueReusableCellWithIdentifier:@"go"]
                 ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"go"];

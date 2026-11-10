@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Builds Cleaner.ipa (arm64, ad-hoc signed with the App Group entitlement;
 # re-sign with your sideloading tool, keeping an App Group).
+# NOTE (run 42862347596, head f2d6500): that build was cancelled by the
+# runner after exactly 15:00 with no steps recorded and no log blob —
+# an infra flake, not a build failure. This commit retriggers it.
 # The app policy is iOS 26.0 or later; the SDK version is intentionally not the
 # deployment target. Set CLEANER_FINAL_IPA to override the publication path.
 set -euo pipefail

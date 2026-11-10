@@ -123,6 +123,7 @@
 - (void)setSelectedIndex:(NSInteger)index
 {
     if (index < 0 || index >= (NSInteger)self.tabs.count) return;
+    _selectedIndex = index;
     UIViewController *current = self.childViewControllers.firstObject;
     UINavigationController *next = self.tabs[index];
     if (current == next) {

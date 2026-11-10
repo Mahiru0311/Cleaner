@@ -7,6 +7,8 @@
 
 #import "CLApp.h"
 
+#import "CLGrant.h"
+#import "CLCache.h"
 #import "CLLaunchServices.h"
 
 #import "CLAppSupport.h"

@@ -74,12 +74,6 @@ typedef NS_ENUM(NSInteger, CLCacheMeasurementState) {
     CLCacheMeasurementCancelled,
 };
 
-// Removes one entry by fd-relative rename; shared with CLGrant's copy path
-// (a failed copy cleans up the partial stage). Callers may pass NULL/nil.
-BOOL cl_remove_entry(int parent, NSString *name, NSString *path,
-                     unsigned long long *_Nullable freed,
-                     CLScanCancellation *_Nullable cancellation);
-
 // Re-validates a scanned item right before purging it; NO with *reason when
 // the container or any target changed, or the path ancestry became unsafe.
 BOOL CLCacheValidateItem(CLCacheItem *item, NSString * _Nullable * _Nullable reason);

@@ -178,6 +178,17 @@ BOOL cl_custom_clean_validate_folder_pattern(NSString *pattern, NSString **reaso
     return YES;
 }
 
+// Resolves a subfolder scope to a full container-relative path. A bare
+// name means a subfolder of Library/Caches, except "tmp" which means the
+// tmp directory itself (not Library/Caches/tmp).
+static NSString *cl_custom_clean_resolve_subfolder(NSString *sub)
+{
+    NSString *std = [sub stringByStandardizingPath];
+    if ([std containsString:@"/"]) return std;
+    if ([std isEqualToString:@"tmp"]) return @"tmp";
+    return [@"Library/Caches" stringByAppendingPathComponent:std];
+}
+
 // A subfolder scope for extension/name rules: a container-relative path
 // under Library/Caches or tmp. A bare name ("com.foo") means a subfolder
 // of Library/Caches.
@@ -194,8 +205,7 @@ static BOOL cl_custom_clean_validate_subfolder(NSString *sub, NSString **reason)
             return NO;
         }
     }
-    NSString *full = [std containsString:@"/"] ? std
-        : [@"Library/Caches" stringByAppendingPathComponent:std];
+    NSString *full = cl_custom_clean_resolve_subfolder(sub);
     if (![full isEqualToString:@"Library/Caches"] && ![full hasPrefix:@"Library/Caches/"] &&
         ![full isEqualToString:@"tmp"] && ![full hasPrefix:@"tmp/"]) {
         if (reason) *reason = @"子目录只能在 Library/Caches 或 tmp 之下";
@@ -207,9 +217,7 @@ static BOOL cl_custom_clean_validate_subfolder(NSString *sub, NSString **reason)
 static NSArray<NSString *> *cl_custom_clean_roots_for_subfolder(NSString *sub)
 {
     if (!sub.length) return nil;  // nil = the default roots (Caches + tmp)
-    NSString *std = [sub stringByStandardizingPath];
-    if (![std containsString:@"/"]) std = [@"Library/Caches" stringByAppendingPathComponent:std];
-    return @[std];
+    return @[cl_custom_clean_resolve_subfolder(sub)];
 }
 
 // Validate a whole rule: kind + pattern + every filter. Folder rules

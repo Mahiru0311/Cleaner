@@ -78,7 +78,7 @@ struct CleanerShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: CleanCacheIntent(),
-            phrases: ["清理全部缓存", "用 Cleaner 清理缓存"],
+            phrases: ["用 \(.applicationName) 清理全部缓存", "在 \(.applicationName) 里清理缓存"],
             shortTitle: "清理全部缓存",
             systemImageName: "trash"
         )

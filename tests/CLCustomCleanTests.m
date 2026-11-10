@@ -124,12 +124,16 @@ int main(void)
             check(!cl_custom_clean_validate_rule(vrule, &vreason), @"min size above max size refused");
             vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, @100, @1000, nil);
             check(cl_custom_clean_validate_rule(vrule, &vreason), @"min below max size valid");
-            vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, @"Documents");
+            vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, @"Documents/foo");
             check(!cl_custom_clean_validate_rule(vrule, &vreason), @"subfolder outside Caches/tmp refused");
             vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, @"Library/Caches/sub");
             check(cl_custom_clean_validate_rule(vrule, &vreason), @"subfolder under Caches allowed");
             vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, @"com.foo");
             check(cl_custom_clean_validate_rule(vrule, &vreason), @"bare subfolder name allowed (means under Caches)");
+            vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, @"Documents");
+            check(cl_custom_clean_validate_rule(vrule, &vreason), @"bare name Documents means Library/Caches/Documents");
+            vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, @"tmp");
+            check(cl_custom_clean_validate_rule(vrule, &vreason), @"bare name tmp means the tmp directory");
             vrule = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, @"Library/../Caches");
             check(!cl_custom_clean_validate_rule(vrule, &vreason), @"subfolder with dot-dot refused");
             vrule = cl_custom_clean_make_rule_full(@"*", @"folder", @"Library/Caches/x", @30, nil, nil, nil);

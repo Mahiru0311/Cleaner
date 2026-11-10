@@ -87,17 +87,35 @@ require(home, "@\"可清理\"", "reclaimable mini card")
 forbid(home, "setTitle:@\"去清理\"", "separate go-to-clean button (status card is the entry)")
 require(home, "tag.fill", "version row icon")
 require(home, "checkmark.shield.fill", "support-range row icon")
+# --- Home layout fixes (v2.1, from the real-device screenshot). ---
+# Mode line 15pt / max 2 lines (16pt wrapped mid-word in the narrow card);
+# 44pt gap after the status row so the check's 31pt overflow clears the
+# info card; green card min height 200 so text and check never collide;
+# content bottom -20 (system tab bar owns the safe area now).
+require(home, "systemFontOfSize:15 weight:UIFontWeightMedium", "mode line 15pt")
+require(home, "numberOfLines = 2", "mode line at most 2 lines")
+require(home, "setCustomSpacing:44 afterView:statusRow", "44pt gap after status row")
+require(home, "constraintGreaterThanOrEqualToConstant:200", "green card min height 200")
+require(home, "constant:-20", "content bottom padding 20")
+forbid(home, "constant:-110", "old -110 padding for the deleted floating bar")
 
-# --- Floating capsule tab bar (custom, not UITabBarController). ---
-require(tabbar, "cornerRadius = 32", "capsule bar radius")
+# --- Native tab bar (v2.1): standard UITabBarController, iOS 26 Liquid
+# Glass — the v2.0 custom floating solid-white capsule bar is gone. ---
+tabbar_h = read(APP / "CLTabBarController.h")
+require(tabbar_h, "@interface CLTabBarController : UITabBarController", "system tab bar subclass")
+require(tabbar, "self.viewControllers = @[homeNav, cleanNav, appsNav, settingsNav]", "four tabs")
 require(tabbar, "house.fill", "home tab icon")
 require(tabbar, "trash.fill", "clean tab icon")
 require(tabbar, "square.grid.2x2.fill", "apps tab icon")
 require(tabbar, "gearshape.fill", "settings tab icon")
-forbid(tabbar, "UITabBarController", "system tab bar")
-require(tabbar, "imagePlacement = NSDirectionalRectEdgeTop", "tab icon above label via configuration")
-forbid(tabbar, "button.imageEdgeInsets", "deprecated button edge insets")
-forbid(tabbar, "button.titleEdgeInsets", "deprecated button edge insets")
+require(tabbar, "tabBar.tintColor = UIColor.systemBlueColor", "blue tab tint")
+require(tabbar, "UINavigationController", "each tab in its own nav controller")
+forbid(tabbar, "cornerRadius = 32", "custom capsule bar radius")
+forbid(tabbar, "shadowOpacity", "hand-rolled bar shadow")
+forbid(tabbar, "additionalSafeAreaInsets", "manual safe-area hack for the floating bar")
+forbid(tabbar, "UIButton", "hand-rolled tab buttons")
+forbid(tabbar, "imageEdgeInsets", "deprecated button edge insets")
+forbid(tabbar, "titleEdgeInsets", "deprecated button edge insets")
 
 # --- Settings: attribution + log without share. ---
 for name in ("worse_query", "KAMUI", "WQFiles", "KernelSU", "GestaltX"):
@@ -117,7 +135,7 @@ require(main, "cl_set_container_label_resolver", "container label resolver")
 require(main, "cl_set_container_list_provider", "container list provider")
 require(main, "cl_recover_interrupted_restore", "interrupted restore recovery")
 
-# --- Build: only the v2 sources, iPhone only, 0.2.0. ---
+# --- Build: only the v2 sources, iPhone only, 0.2.1. ---
 for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.m",
                "Core/CLLaunchServices.m", "App/CLUI.m", "App/CLCleanerViewController.m",
                "App/CLAppsViewController.m", "App/CLHomeViewController.m",
@@ -126,7 +144,7 @@ for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.
     require(build, source, f"build source {source}")
 forbid(build, "WQCore.m", "v0.1 build source")
 require(build, "-Os -flto -dead_strip", "size optimisation flags")
-require(info, "<string>0.2.0</string>", "version 0.2.0")
+require(info, "<string>0.2.1</string>", "version 0.2.1")
 forbid(info, "CFBundleIcons~ipad", "iPad icon set")
 forbid(info, "UISupportedInterfaceOrientations~ipad", "iPad orientations")
 

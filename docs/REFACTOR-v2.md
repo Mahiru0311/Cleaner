@@ -102,9 +102,13 @@ KernelSU Manager（Android，Jetpack Compose，Material 3 / Miuix，v3.2 重做�
 
 搬到 iOS 26 / Cleaner 上，改成这样：
 
-- **底部导航（自定义悬浮胶囊栏，非系统 Tab Bar）：** 首页 / 清理 / 应用 / 设置，4 个
-  （对应 KernelSU 的 Home / Superuser / Module / Settings；iOS 上用自定义悬浮白底胶囊栏 + 阴影实现，
-  不是 `UITabBarController` 的标准栏）
+- **底部导航（v2.1 修正：iOS 26 原生液态玻璃，删掉自定义悬浮白底胶囊栏）**
+  （用户 2026-11-10 18:14 真机截图反馈：界面乱飞、很丑，底栏要用 iOS 26 底层液态玻璃，像 huami GestaltX 那个；
+  GestaltX 用的是 plain SwiftUI `TabView` + `.tint(.blue)`，iOS 26 上自动就是原生液态玻璃底栏）
+  - 用标准 `UITabBarController`，4 个 tab 各包一个 `UINavigationController`，tint 蓝色；
+    系统在 iOS 26 上自动渲染为液态玻璃底栏（悬浮玻璃 pill、滚动时收缩），不要手写胶囊 view、不要纯白底、不要手动阴影
+  - 系统自动处理 safe-area / content inset，每页最后一行滚动到底必须完整可见
+  - 首页 / 清理 / 应用 / 设置，4 个（对应 KernelSU 的 Home / Superuser / Module / Settings）
 - **图标语言（用户 2026-11-10 16:50 不许 emoji；2026-11-10 17:00 指定参考 huamidev/GestaltX）**
   - GestaltX 的语言（源码 `~/workspace/temporary/GestaltX/`，只参考设计，不抄 logo 和代码；
     它是 SwiftUI 应用，我们只借鉴图标设计，v2 仍纯 ObjC + UIKit）：
@@ -133,8 +137,9 @@ KernelSU Manager（Android，Jetpack Compose，Material 3 / Miuix，v3.2 重做�
     Cleaner 版本 / v0.2.0 (0.2.0)；系统版本 / iOS 27.0.1；设备型号 / iPhone 17；
     沙盒技术 / worse_query · App Group；App Group 状态 / 正常；支持范围 / iOS 26.0–26.7.2 / 27.2
     （符号见上节图标语言：tag.fill / cpu / iphone / shield.fill / lock.shield.fill / checkmark.shield.fill）
-  - 底部悬浮胶囊形白底栏（带阴影）：首页 house.fill、清理 trash.fill、应用 square.grid.2x2.fill、
-    设置 gearshape.fill；选中蓝色字形 + 蓝色文字 + 灰色 pill 选中背景，未选中黑色实心图标
+  - 底部是标准 `UITabBarController`（v2.1 起，iOS 26 原生液态玻璃，见上节；
+    v2.0 的自定义悬浮白底胶囊栏已删）：首页 house.fill、清理 trash.fill、
+    应用 square.grid.2x2.fill、设置 gearshape.fill，tint 蓝色
   - 图标借鉴 Filza（iOS 文件管理器，扁平原生风、每种文件配彩色图标）：
     底部栏用实心填充 SF Symbols；清理列表每行用真实彩色应用图标（LaunchServices 取的）
   - **首页四种状态（用户 2026-11-10 17:20 要求写扎实）：**
@@ -193,7 +198,8 @@ KernelSU Manager（Android，Jetpack Compose，Material 3 / Miuix，v3.2 重做�
 ```
 Cleaner/
   App/            新 UI：CLHome（四态 + 探针）, CLCleaner（状态机）, CLApps（备份/恢复/清空）,
-                  CLSettings（关于/来源/日志）, CLLog（只读日志）, CLTabBarController（悬浮胶囊栏）,
+                  CLSettings（关于/来源/日志）, CLLog（只读日志）,
+                  CLTabBarController（v2.1 起：标准 UITabBarController，iOS 26 原生液态玻璃）,
                   CLUI（共用 UI）, main.m（入口 + resolvers + 恢复中断的还原）
   Core/
     CLGrant.m     worse_query：App Group + token + grant LRU
@@ -255,6 +261,46 @@ iPhone only / 竖屏；图标只含 iPhone 尺寸（40x40 / 60x60 @2x/@3x），
 已逐轮修掉并把检查固化进本地脚本（`/tmp/v2_check.py` 结构/符号/导入/
 重复行检查、`/tmp/v2_imports.py` 跨文件导入闭包检查）。
 真机验证仍未做（见下）。
+
+## 8. v2.1 布局修复（2026-11-10 晚，真机截图反馈）
+
+用户在 iPhone 17 Pro Max / iOS 27.0 上装了 0.2.0（截图
+`docs/v2-real-device-home-2026-11-10.jpg`）：功能是通的（已授权、App Group
+正常、114 个应用、6.15 GB 可清理），但界面三处翻车，用户原话“界面完全乱飞，
+界面真的很丑”，并点名底栏要用 iOS 26 底层的液态玻璃，像 huami GestaltX 那个。
+
+修了什么（版本 0.2.1，build 1 不变）：
+1. **底栏（最大问题）：删掉自定义悬浮白底胶囊栏**（`CLTabBarController` 原先
+   是 `UIViewController` + 手写白底圆角 view + 手工阴影 + 灰色 pill + 92pt
+   `additionalSafeAreaInsets`）。改成标准 `UITabBarController`：4 个 tab 各包
+   一个 `UINavigationController`，tint 蓝色——和 GestaltX 的 plain SwiftUI
+   `TabView` + `.tint(.blue)` 同一个做法；iOS 26 上系统自动渲染成原生液态玻璃
+   底栏（悬浮玻璃 pill、滚动时收缩），不要手写胶囊、不要纯白底、不要手动阴影。
+2. **内容被底栏盖住：** 截图里最后一行「支持范围」一半藏在浮动栏后面，
+   因为 scroll view 只留了给浮动栏的 -110 底部留白，栏本身又不属于 safe area。
+   v2.1 起系统接管 safe-area / content inset：首页 content 底部留白改 -20，
+   各页最后一行滚动到底必须完整可见（本地无法截真机图验证，见下）。
+3. **绿色对勾圆圈位置：** 截图里它落在绿卡底部中央偏右，跨过卡片下沿，
+   压到下面信息卡的顶部。KSU 原版（HomeMiuix.kt）是锚在卡片右下角、
+   110pt、往右 +27、往下 +31 溢出——我们的约束本来就是这么写的，出问题的是
+   下一行只隔了 12pt，对勾往下溢出 31pt，19pt 直接撞上信息卡。修法：状态行
+   之后改 44pt 间距（31 溢出 + 13 空隙），绿卡加最小高度 200pt，
+   保证三行文字（约 100pt）和对勾顶部（高 - 79）永不相撞。
+4. **绿卡模式行断词：** `<App Group> [沙盒模式]` 在 16pt 下于窄卡里断成
+   “[沙盒 / 模式]”。改 15pt、最多 2 行。
+5. 其余不变：绿卡 #DFFAE4、对勾 #36D167、信息卡六行、GestaltX 图标语言
+   （SF Symbols、黑字形、蓝强调色）、不许 emoji。
+
+本地已验（Linux，无 Xcode）：`browser_ui_regressions.py` 通过（新增断言：
+原生 tab bar、禁自定义胶囊栏/手动阴影/手动 safe-area、模式行 15pt/2 行、
+44pt 间距、绿卡最小高 200、content 底部 -20、版本 0.2.1）；
+`python3 -m unittest discover -s tests -p 'test_*.py'` 16 个，2 个失败与 v2.0
+相同（`test_build` 两用例缺 `plutil`，Linux 固有）；`bash -n build.sh` 及
+各 runner 通过；`/tmp/v2_check.py` 全过。`/tmp/v2_imports.py` 报 2 项是
+误报（`CLLSLayout` 是 CLLaunchServices.m 文件内 typedef，
+`CLPrivate` 是 CLUI.m 文件内 category），两文件本次未动，属既有检查器噪声。
+
+GitHub Actions 构建：见下（成功后补运行号）。
 
 ## 6. 风险（先说）
 

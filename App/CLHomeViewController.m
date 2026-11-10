@@ -4,8 +4,9 @@
 //  Layout (see HomeMiuix.kt StatusCard + the reference screenshot):
 //  light-grey background, power icon top right, huge bold title, green status
 //  card left (#DFFAE4, 110pt check circle offset (27, 31), #36D167) + two
-//  white mini cards right, one white info card, floating capsule tab bar
-//  (owned by CLTabBarController). No emoji anywhere; SF Symbols only.
+//  white mini cards right, one white info card, standard UITabBarController
+//  (iOS 26 native Liquid Glass, owned by CLTabBarController since v2.1).
+//  No emoji anywhere; SF Symbols only.
 //
 
 #import "CLHomeViewController.h"
@@ -164,7 +165,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
 
 - (void)refreshStatus
 {
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.0";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.1";
     BOOL supported = cl_system_supported();
     BOOL hasGroup = cl_app_group() != nil;
     if (!supported) {
@@ -370,7 +371,11 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         [content.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:12],
         [content.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-12],
         [content.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:12],
-        [content.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-110],
+        // v2.1: the system tab bar owns the bottom safe area now (the -110
+        // was padding for the deleted floating capsule bar). 20pt of
+        // breathing room is all the content needs; the last row scrolls
+        // fully above the glass tab bar.
+        [content.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-20],
         [content.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-24],
     ]];
 
@@ -428,10 +433,12 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     self.statusCard = status;
     self.statusTitleLabel = [self makeLabel:@"已授权" font:[UIFont systemFontOfSize:22 weight:UIFontWeightSemibold]
                                       color:UIColor.labelColor];
-    self.statusModeLabel = [self makeLabel:@"<App Group> [沙盒模式]" font:[UIFont systemFontOfSize:16 weight:UIFontWeightMedium]
+    // Mode line: 15pt, at most 2 lines. At 16pt it wrapped mid-word
+    // ("[沙盒 / 模式]") in the narrow green card on a real device (v2.1).
+    self.statusModeLabel = [self makeLabel:@"<App Group> [沙盒模式]" font:[UIFont systemFontOfSize:15 weight:UIFontWeightMedium]
                                      color:UIColor.labelColor];
-    self.statusModeLabel.numberOfLines = 0;
-    self.statusVersionLabel = [self makeLabel:@"版本：0.2.0" font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
+    self.statusModeLabel.numberOfLines = 2;
+    self.statusVersionLabel = [self makeLabel:@"版本：0.2.1" font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
                                         color:UIColor.labelColor];
     UIStackView *statusTexts = [[UIStackView alloc] initWithArrangedSubviews:@[
         self.statusTitleLabel, self.statusModeLabel, self.statusVersionLabel]];
@@ -472,14 +479,23 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     statusRow.alignment = UIStackViewAlignmentFill;
     [NSLayoutConstraint activateConstraints:@[
         [status.widthAnchor constraintEqualToAnchor:statusRow.widthAnchor multiplier:0.55],
+        // Minimum height: the three text lines end ~100pt from the top and
+        // the 110pt check circle starts at (height - 79); 200pt guarantees
+        // the text and the circle never collide (v2.1).
+        [status.heightAnchor constraintGreaterThanOrEqualToConstant:200],
     ]];
     [content addArrangedSubview:statusRow];
+    // The check circle overflows the green card's bottom edge by 31pt
+    // (HomeMiuix.kt offset). The gap to the info card must be wider than
+    // that overflow, or the circle lands on the next card — exactly what
+    // happened on the real device in v2.0 (12pt gap). 44pt leaves 13pt.
+    [content setCustomSpacing:44 afterView:statusRow];
 
     // Info card: one white rounded card, icon + bold title + grey value.
     UIView *info = [UIView new];
     info.backgroundColor = UIColor.systemBackgroundColor;
     info.layer.cornerRadius = 28;
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.0";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.1";
     NSString *build = NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"1";
     self.groupStatusValueLabel = [UILabel new];
     NSArray<UIView *> *rows = @[

@@ -300,7 +300,21 @@ iPhone only / 竖屏；图标只含 iPhone 尺寸（40x40 / 60x60 @2x/@3x），
 误报（`CLLSLayout` 是 CLLaunchServices.m 文件内 typedef，
 `CLPrivate` 是 CLUI.m 文件内 category），两文件本次未动，属既有检查器噪声。
 
-GitHub Actions 构建：见下（成功后补运行号）。
+GitHub Actions 构建：运行 42798422761，`completed / success`，head
+76856a3b8703（Xcode 26.6 / iOS SDK 26.5），一次通过，无需修复轮次。
+artifact `Cleaner-ipa`（id 13754232881）130,025 字节（zip）。下载验证
+（`~/workspace/downloads/cleaner-v2-1-ipa/Cleaner.ipa`，135,390 字节，
+SHA-256 b2dcb322519e7257c8aa7b893e78ca0ffb4392c5c0c1fe9b7b67390e438dc51d）：
+Mach-O 64-bit arm64（cputype 0100000c），主二进制 348,912 字节（目标 <500KB ✓），
+IPA 135,390 字节（目标 <250KB ✓）；Info.plist：Cleaner /
+com.mahiru.cleaner / 0.2.1 / build 1 / MinimumOS 26.0 / zh_CN /
+iPhone only；图标只含 iPhone 尺寸；10 条中文串（缓存清理/已授权/受限/
+清理缓存/崩溃日志/重新扫描/清理/应用/设置/首页）全部在二进制里（UTF-16LE）；
+内嵌 entitlements 含 `application-groups` = `group.com.mahiru.cleaner`
+（ad-hoc 签名，无 get-task-allowed；build.sh 在 macOS 上签名后也校验过）。
+真机验证仍未做：液态玻璃底栏观感、对勾圆圈位置、最后一行是否完整可见、
+扫描/清理/停止后重扫、备份/恢复/清空、首页四态、崩溃日志行——都须用户在
+iPhone 17 Pro Max / iOS 27.0 上看截图确认。
 
 ## 6. 风险（先说）
 

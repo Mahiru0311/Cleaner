@@ -23,6 +23,44 @@
 #import "CLGrant.h"
 #import "CLScan.h"
 
+// --- Intent-run diagnostics (v2.6). ---
+// The last intent run, in the App Group (shared with the guide page).
+// Falls back to our own Caches when the group is unavailable (the app
+// cannot clean without the group anyway, so this is only a safety net).
+static NSString *cl_intent_last_run_path(void)
+{
+    NSString *dir = cl_app_group();
+    if (!dir.length) {
+        dir = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    }
+    return dir.length ? [dir stringByAppendingPathComponent:@"cl-intent-last-run.plist"] : nil;
+}
+
+void cl_intent_record_run(NSDictionary *info)
+{
+    NSString *path = cl_intent_last_run_path();
+    if (!path) return;
+    NSMutableDictionary *record = [NSMutableDictionary new];
+    for (NSString *key in @[@"freed", @"customFreed", @"appsCleaned", @"appsRemaining",
+                            @"appsTotal", @"failed", @"partial", @"timedOut",
+                            @"duration", @"headless"]) {
+        id value = info[key];
+        if (value) record[key] = value;
+    }
+    if (info[@"error"]) record[@"error"] = info[@"error"];
+    record[@"date"] = info[@"date"] ?: [NSDate date];
+    NSDictionary *previous = [NSDictionary dictionaryWithContentsOfFile:path];
+    record[@"runCount"] = @([previous[@"runCount"] unsignedIntegerValue] + 1);
+    [record writeToFile:path atomically:YES];
+}
+
+NSDictionary *cl_intent_last_run(void)
+{
+    NSString *path = cl_intent_last_run_path();
+    NSDictionary *d = path ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
+    return [d isKindOfClass:NSDictionary.class] ? d : nil;
+}
+
 NSDictionary *CLBackgroundCleanRun(NSTimeInterval budgetSeconds)
 {
     CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();

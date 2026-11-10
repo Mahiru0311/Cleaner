@@ -244,7 +244,7 @@ static NSString *cl_custom_clean_size_text(unsigned long long size)
     return [NSString stringWithFormat:@"%.2fGB", size / 1073741824.0];
 }
 
-NSString *cl_custom_clean_rule_summary(NSDictionary *rule)
+NSString *cl_custom_clean_rule_title(NSDictionary *rule)
 {
     NSString *bid = rule[CLCustomRuleBundleIDKey];
     NSString *app = [bid isEqualToString:@"*"] ? @"全部应用" : (cl_display_name(bid) ?: bid);
@@ -254,44 +254,44 @@ NSString *cl_custom_clean_rule_summary(NSDictionary *rule)
     if ([kind isEqualToString:@"folder"]) {
         what = [NSString stringWithFormat:@"文件夹 %@", pattern];
     } else if ([kind isEqualToString:@"directory"]) {
-        // v2.5: "微信 · 目录 Library/Caches/xxx（全部）" or
-        // "微信 · 目录 … · 扩展 .mp4,.mov · 名字含 thumb · 30天前".
+        // "微信 · 目录 Library/Caches/xxx（全部）" or "…（按条件）".
         NSString *scope = rule[CLCustomRuleScopeKey];
         what = [NSString stringWithFormat:@"目录 %@（%@）", pattern,
                 [scope isEqualToString:CLCustomRuleScopeFiltered] ? @"按条件" : @"全部"];
-        NSString *exts = rule[CLCustomRuleExtensionsKey];
-        if (exts.length) what = [what stringByAppendingFormat:@" · 扩展 %@", exts];
-        NSString *name = rule[CLCustomRuleNameKey];
-        if (name.length) what = [what stringByAppendingFormat:@" · 名字含 %@", name];
-        NSMutableString *s = [NSMutableString stringWithFormat:@"%@ · %@", app, what];
-        NSNumber *age = rule[CLCustomRuleMinAgeDaysKey];
-        if (age) [s appendFormat:@" · %@天前", age];
-        NSNumber *minSize = rule[CLCustomRuleMinSizeKey];
-        if (minSize && minSize.unsignedLongLongValue > 0)
-            [s appendFormat:@" · >%@", cl_custom_clean_size_text(minSize.unsignedLongLongValue)];
-        NSNumber *maxSize = rule[CLCustomRuleMaxSizeKey];
-        if (maxSize && maxSize.unsignedLongLongValue > 0)
-            [s appendFormat:@" · <%@",
-             cl_custom_clean_size_text(maxSize.unsignedLongLongValue)];
-        return [s copy];
     } else if ([kind isEqualToString:@"extension"]) {
         what = [NSString stringWithFormat:@"扩展 %@", pattern];
     } else {
         what = [NSString stringWithFormat:@"文件名含 %@", pattern];
     }
-    NSMutableString *s = [NSMutableString stringWithFormat:@"%@ · %@", app, what];
+    return [NSString stringWithFormat:@"%@ · %@", app, what];
+}
+
+NSString *cl_custom_clean_rule_filters_text(NSDictionary *rule)
+{
+    NSMutableArray<NSString *> *parts = [NSMutableArray new];
+    NSString *exts = rule[CLCustomRuleExtensionsKey];
+    if (exts.length) [parts addObject:[NSString stringWithFormat:@"扩展 %@", exts]];
+    NSString *name = rule[CLCustomRuleNameKey];
+    if (name.length) [parts addObject:[NSString stringWithFormat:@"名字含 %@", name]];
     NSNumber *age = rule[CLCustomRuleMinAgeDaysKey];
-    if (age) [s appendFormat:@" · %@天前", age];
+    if (age) [parts addObject:[NSString stringWithFormat:@"%@天前", age]];
     NSNumber *minSize = rule[CLCustomRuleMinSizeKey];
     if (minSize && minSize.unsignedLongLongValue > 0)
-        [s appendFormat:@" · >%@", cl_custom_clean_size_text(minSize.unsignedLongLongValue)];
+        [parts addObject:[NSString stringWithFormat:@">%@", cl_custom_clean_size_text(minSize.unsignedLongLongValue)]];
     NSNumber *maxSize = rule[CLCustomRuleMaxSizeKey];
     if (maxSize && maxSize.unsignedLongLongValue > 0)
-        [s appendFormat:@" · <%@",
-         cl_custom_clean_size_text(maxSize.unsignedLongLongValue)];
+        [parts addObject:[NSString stringWithFormat:@"<%@",
+                          cl_custom_clean_size_text(maxSize.unsignedLongLongValue)]];
     NSString *sub = rule[CLCustomRuleSubfolderKey];
-    if (sub.length) [s appendFormat:@" · 于 %@", sub];
-    return [s copy];
+    if (sub.length) [parts addObject:[NSString stringWithFormat:@"于 %@", sub]];
+    return parts.count ? [parts componentsJoinedByString:@" · "] : nil;
+}
+
+NSString *cl_custom_clean_rule_summary(NSDictionary *rule)
+{
+    NSString *filters = cl_custom_clean_rule_filters_text(rule);
+    NSString *title = cl_custom_clean_rule_title(rule);
+    return filters.length ? [NSString stringWithFormat:@"%@ · %@", title, filters] : title;
 }
 
 BOOL cl_custom_clean_validate_folder_pattern(NSString *pattern, NSString **reason)
@@ -498,6 +498,8 @@ static NSDictionary *cl_custom_clean_apply_rule(NSArray<CLCacheItem *> *apps, NS
     NSUInteger failed = 0, skipped = 0, matched = 0, appsHit = 0;
     NSMutableArray<NSString *> *sample = [NSMutableArray new];
     NSString *reason = nil;
+    NSMutableArray<NSString *> *failedPaths = [NSMutableArray new];
+    NSMutableArray<NSString *> *skippedPaths = [NSMutableArray new];
     if (progress) progress([NSString stringWithFormat:@"正在%@ %@…", dryRun ? @"预览" : @"清理",
                             cl_custom_clean_rule_summary(rule)]);
     for (CLCacheItem *app in apps) {
@@ -584,6 +586,8 @@ static NSDictionary *cl_custom_clean_apply_rule(NSArray<CLCacheItem *> *apps, NS
             skipped += r.skipped;
             matched += r.matched;
             matchedBytes += r.matchedBytes;
+            [failedPaths addObjectsFromArray:r.failedPaths ?: @[]];
+            [skippedPaths addObjectsFromArray:r.skippedPaths ?: @[]];
             for (NSString *s in r.samplePaths) {
                 if (sample.count < 50) {
                     [sample addObject:[NSString stringWithFormat:@"%@ · %@", app.name, s]];
@@ -614,6 +618,8 @@ static NSDictionary *cl_custom_clean_apply_rule(NSArray<CLCacheItem *> *apps, NS
             skipped += r.skipped;
             matched += r.matched;
             matchedBytes += r.matchedBytes;
+            [failedPaths addObjectsFromArray:r.failedPaths ?: @[]];
+            [skippedPaths addObjectsFromArray:r.skippedPaths ?: @[]];
             for (NSString *s in r.samplePaths) {
                 if (sample.count < 50) {
                     [sample addObject:[NSString stringWithFormat:@"%@ · %@", app.name, s]];
@@ -625,7 +631,9 @@ static NSDictionary *cl_custom_clean_apply_rule(NSArray<CLCacheItem *> *apps, NS
     }
     NSMutableDictionary *entry = [@{ @"freed": @(freed), @"failed": @(failed), @"skipped": @(skipped),
                                     @"matched": @(matched), @"matchedBytes": @(matchedBytes),
-                                    @"sample": [sample copy], @"apps": @(appsHit) } mutableCopy];
+                                    @"sample": [sample copy], @"apps": @(appsHit),
+                                    @"failedPaths": [failedPaths copy],
+                                    @"skippedPaths": [skippedPaths copy] } mutableCopy];
     if (reason.length) entry[@"reason"] = reason;
     return [entry copy];
 }
@@ -651,6 +659,7 @@ void cl_custom_clean_run_with_cancellation(NSArray<CLCacheItem *> *apps, CLScanC
                 totalFailed++;
                 [perRule addObject:@{ @"rule": rule, @"freed": @0, @"failed": @1, @"skipped": @0,
                                       @"matched": @0, @"matchedBytes": @0, @"sample": @[], @"apps": @0,
+                                      @"failedPaths": @[], @"skippedPaths": @[],
                                       @"reason": reason ?: @"规则无效" }];
                 continue;
             }
@@ -703,6 +712,8 @@ void cl_custom_clean_dry_run(NSArray<CLCacheItem *> *apps, NSDictionary *rule,
             completion(@{ @"matched": entry[@"matched"], @"bytes": entry[@"matchedBytes"],
                           @"sample": entry[@"sample"], @"skipped": entry[@"skipped"],
                           @"apps": entry[@"apps"], @"failed": entry[@"failed"],
+                          @"failedPaths": entry[@"failedPaths"] ?: @[],
+                          @"skippedPaths": entry[@"skippedPaths"] ?: @[],
                           @"warnings": [warnings copy] });
         }
     });
@@ -719,6 +730,7 @@ void cl_custom_clean_run_one_rule(NSArray<CLCacheItem *> *apps, NSDictionary *ru
         if (!cl_custom_clean_validate_rule(rule, &reason)) {
             if (completion) completion(@{ @"freed": @0, @"failed": @1, @"skipped": @0, @"matched": @0,
                                           @"matchedBytes": @0, @"sample": @[], @"apps": @0,
+                                          @"failedPaths": @[], @"skippedPaths": @[],
                                           @"reason": reason ?: @"规则无效", @"warnings": @[] });
             return;
         }

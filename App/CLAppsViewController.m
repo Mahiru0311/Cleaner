@@ -43,6 +43,15 @@
     // iPhone17 (iPhone18,3) line is noise). The search bar is the header.
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
+    // v2.6: manual refresh (user 2026-11-10 21:55 — the page re-scanned
+    // every time it opened, which was annoying). Top-right refresh
+    // button; the list loads once and then stays put until the user
+    // taps refresh (or pulls down). viewWillAppear no longer rescans.
+    UIBarButtonItem *refresh = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.clockwise"]
+                                                                 style:UIBarButtonItemStylePlain
+                                                                target:self action:@selector(userRefresh)];
+    refresh.accessibilityLabel = @"刷新";
+    self.navigationItem.rightBarButtonItem = refresh;
     [self scan];
 }
 
@@ -59,11 +68,13 @@
 {
     [super viewWillAppear:animated];
     if (_scanning || _busy) return;
-    // Rescan when there is no finished scan yet (e.g. the previous one was
-    // cancelled when the tab was left) or when the data is stale (> 60 s).
-    // A backup/restore/clear already rescans when it finishes.
-    if (_lastScanFinished <= 0 ||
-        NSDate.date.timeIntervalSinceReferenceDate - _lastScanFinished > 60.0) {
+    // v2.6: load once, then stay put. Only scan on appear when nothing
+    // has ever finished loading (e.g. the first scan was cancelled when
+    // the tab was left). Stale data (> 60 s) is NOT a reason to rescan
+    // any more — the user taps the top-right refresh button (or pulls
+    // down) when they want fresh data. A backup/restore/clear still
+    // rescans when it finishes (dir.onDataChanged).
+    if (_lastScanFinished <= 0 && !_apps.count) {
         [self scan];
     }
 }
@@ -78,6 +89,9 @@
 {
     _busy = busy;
     _status = status;
+    // v2.6: the refresh button is disabled while a scan is running, so
+    // tapping it twice cannot start two scans.
+    self.navigationItem.rightBarButtonItem.enabled = !busy;
     [self.tableView reloadData];
 }
 
@@ -234,10 +248,21 @@ static void CLAppScanWatch(CLScanCancellation *cancellation, NSUInteger lastSeri
             if (generation != self->_scanGeneration || cancellation.isCancelled) return;
             self->_scanning = NO;
             self->_lastScanFinished = NSDate.date.timeIntervalSinceReferenceDate;
+            // v2.6: the first load fades in (system cross-dissolve) instead
+            // of popping in; later refreshes just reload (the user asked
+            // for a refresh, not a show).
+            BOOL firstLoad = self->_apps == nil || self->_apps.count == 0;
             self->_apps = apps;
             [self rebuildVisibleApps];
             [self.refreshControl endRefreshing];
-            [self setBusy:NO status:note];
+            if (firstLoad) {
+                [UIView transitionWithView:self.tableView duration:0.3
+                                   options:UIViewAnimationOptionTransitionCrossDissolve
+                                animations:^{ [self setBusy:NO status:note]; }
+                                completion:nil];
+            } else {
+                [self setBusy:NO status:note];
+            }
         });
     });
 }
@@ -276,8 +301,22 @@ static void CLAppScanWatch(CLScanCancellation *cancellation, NSUInteger lastSeri
     if (_status) return _status;
     unsigned long long total = 0;
     for (CLAppItem *a in _apps) total += a.bytes;
-    if (_query.length) return [NSString stringWithFormat:@"%lu / %lu 个应用", (unsigned long)self.visibleApps.count, (unsigned long)_apps.count];
-    return [NSString stringWithFormat:@"%lu 个应用 · %@ 应用数据", (unsigned long)_apps.count, cl_size_text(total)];
+    // v2.6: last-scan time, so the user can tell how fresh the list is
+    // without the page re-scanning behind their back.
+    NSString *scannedAt = @"";
+    if (_lastScanFinished > 0) {
+        static NSDateFormatter *formatter = nil;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            formatter = [NSDateFormatter new];
+            formatter.dateFormat = @"HH:mm";
+        });
+        scannedAt = [NSString stringWithFormat:@" · 上次扫描 %@",
+                     [formatter stringFromDate:[NSDate dateWithTimeIntervalSinceReferenceDate:_lastScanFinished]]];
+    }
+    if (_query.length) return [NSString stringWithFormat:@"%lu / %lu 个应用%@",
+                               (unsigned long)self.visibleApps.count, (unsigned long)_apps.count, scannedAt];
+    return [NSString stringWithFormat:@"%lu 个应用 · %@ 应用数据%@", (unsigned long)_apps.count, cl_size_text(total), scannedAt];
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section

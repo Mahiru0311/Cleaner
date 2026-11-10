@@ -111,6 +111,13 @@ NSArray<NSString *> *cl_custom_clean_parse_extensions(NSString *_Nullable csv);
 // "全部应用 · 扩展 .mp4" / "微信 · 文件夹 Library/Caches/xxx".
 NSString *cl_custom_clean_rule_summary(NSDictionary *rule);
 
+// v2.6: the summary split for the two-line rule cell. The title is the
+// rule itself (app + directory/kind + scope); the filters line is the
+// conditions only ("扩展 .mp4,.mov · 名字含 thumb · 30天前 · >1KB"), or
+// nil when the rule has no filters. The summary is title + filters.
+NSString *cl_custom_clean_rule_title(NSDictionary *rule);
+NSString *_Nullable cl_custom_clean_rule_filters_text(NSDictionary *rule);
+
 // Validate a folder-rule pattern (relative path under a container).
 // NO with *reason when it targets the container root, Documents, or Library.
 BOOL cl_custom_clean_validate_folder_pattern(NSString *pattern, NSString *_Nullable *_Nullable reason);

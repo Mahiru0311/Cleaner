@@ -5,17 +5,19 @@
 //
 //  Why this page exists (2026-11-10 20:44): the user searched "cleaner"
 //  in the Shortcuts app and found nothing. The v2.4 package's intent
-//  registration was verified fine — but the v2.4 BINARY had no intent
-//  types at all: -O + LTO + -dead_strip deleted them (keepAlive only
-//  referenced the type metadata, which the optimizer threw away). v2.5
-//  fixes that with a real data flow (CLCleanerShortcutsInfo reads the
-//  registered shortcuts and shows their titles here) and a real binary
-//  check in build.sh. This page therefore does two things the old alert
-//  did not: it states the preconditions (install 0.2.5, open Cleaner
-//  once, let the system index, then search), and it shows a LIVE status
+//  registration was verified fine, and the types WERE in the binary
+//  (proven by the __swift5_types descriptors in v2.5) — the 20:46
+//  "optimizer removed the types" diagnosis was wrong and is withdrawn;
+//  the real on-device cause was never established. v2.6 therefore does
+//  not assert a fix: it states the preconditions (install 0.2.6, open
+//  Cleaner once, let the system index, then search), shows a LIVE status
 //  (does this build actually carry the intent? has this phone launched
-//  the app once?) so the user can tell "old version" from "broken
-//  registration" themselves.
+//  the app once?) and the LAST RUN (what the shortcut actually did,
+//  including whether the app was opened for it), so the user can tell
+//  "old version" from "broken registration" themselves — and so the
+//  next "it opened the app" report can be told apart from a headless
+//  intent run (which was, until v2.6, indistinguishable from the
+//  cleaner:// URL scheme opening the app).
 //  "Not found" is NOT reported as fixed until the user finds it on-device
 //  and taps it once.
 //

@@ -27,11 +27,29 @@
 //    scanLimited (NSNumber BOOL), duration (NSNumber seconds),
 //    error (NSString, only when the scan itself failed).
 //
+//  Intent-run diagnostics (v2.6): every intent run is recorded in the
+//  App Group (cl-intent-last-run.plist) so the Settings guide can show
+//  what actually happened — the last run's time, freed bytes, apps
+//  cleaned/remaining, whether it was partial or timed out, and whether
+//  the run was headless (no scene — the app was not open) or the app was
+//  already alive. The guide reads it with cl_intent_last_run; nil means
+//  no intent run has been recorded yet. A runCount is kept alongside.
+//  The record is written by the intent itself (Swift), not by the
+//  background clean, because only the intent knows whether the process
+//  was headless-launched (UIApplication.connectedScenes is empty).
+//  Keys: date, freed, customFreed, appsCleaned, appsRemaining, appsTotal,
+//  failed, partial, timedOut, duration, headless, error (optional),
+//  runCount.
 
 #import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
 NSDictionary *CLBackgroundCleanRun(NSTimeInterval budgetSeconds);
+
+// Record one intent run (info as above; date is filled in when absent).
+void cl_intent_record_run(NSDictionary *info);
+// The last recorded intent run, or nil when none has been recorded.
+NSDictionary *_Nullable cl_intent_last_run(void);
 
 NS_ASSUME_NONNULL_END

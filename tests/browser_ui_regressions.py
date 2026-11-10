@@ -270,6 +270,23 @@ require(cleaner, "itemsUpdate:", "clean page consumes incremental batches")
 apps = read(APP / "CLAppsViewController.m")
 require(apps, "扫描已取消", "cancelled app scan resets state")
 require(apps, "_lastScanFinished", "apps page tracks finished scans")
+# --- Apps page (v2.6): manual refresh. The user (2026-11-10 21:55)
+# hated the page re-scanning every time it opened. Now it loads once
+# and stays put: viewWillAppear only scans when nothing has ever
+# finished loading (e.g. the first scan was cancelled); the > 60 s
+# staleness rescan is gone. A top-right refresh button (and pull-down)
+# triggers a real rescan — userRefresh invalidates the caches and calls
+# scan, not a no-op (the v2.2 invalidateScan bug). The header shows the
+# last-scan time, and the refresh button is disabled while scanning.
+require(apps, "arrow.clockwise", "top-right refresh button")
+require(apps, "userRefresh", "refresh button triggers a rescan")
+require(apps, "上次扫描", "last-scan time in the header")
+require(apps, "_lastScanFinished <= 0 && !_apps.count", "appear only scans when nothing ever finished")
+require(apps, "rightBarButtonItem.enabled = !busy", "refresh button disabled while scanning")
+forbid(apps, "NSDate.date.timeIntervalSinceReferenceDate - _lastScanFinished > 60.0",
+       "the > 60 s staleness rescan is gone")
+require(apps, "firstLoad", "first load fades in")
+require(apps, "TransitionCrossDissolve", "first-load cross-dissolve")
 # --- Apps page (v2.2): tap goes straight into the app's directory. The old
 # backup/restore/clear sheet and its handlers moved to CLAppActions; the
 # directory browser is the entry point, not a button behind backup. ---
@@ -339,6 +356,32 @@ require(cache, "CLCleanMatchOptions", "filter options struct")
 require(cache, "CLCleanMatchResult", "per-item accounting struct")
 require(custom_vc, "预览匹配", "rule preview action")
 require(custom_vc, "清理这些文件", "dry-run confirm button")
+
+# --- Custom cleaning (v2.6): rigor + UI polish. The user (2026-11-10
+# 21:55) said the rules were "不太严谨" and the UI "不太好看".
+# Rigor: exact extension matching (a bare ".mp4" dotfile is not an mp4,
+# ".mp4" never matches ".mp4.bak" or "xmp4"); name-substring matching is
+# case-insensitive and documented; preview set == actual delete set (the
+# run records the same sample it showed in the dry-run — proven by the
+# ObjC test); every skipped/failed item is listed with its reason, never
+# silently dropped. UI: two-line rule cells (title + filters), an
+# empty-rules footer, insert-row animations on add/edit/preset, and the
+# preview/run reports list the skipped/failed paths.
+require(cache, "lower.length > lext.length", "exact extension match: the name must be longer than the extension")
+require(cache, "failedPaths", "failed paths listed with reasons")
+require(cache, "skippedPaths", "skipped paths listed with reasons")
+require(cache, "删除失败", "unlink failure reason")
+require(cache, "太新", "too-new skip reason")
+require(custom, "failedPaths", "per-rule entry carries failed paths")
+require(custom, "skippedPaths", "per-rule entry carries skipped paths")
+require(custom, "cl_custom_clean_rule_title", "rule title (app + directory + scope)")
+require(custom, "cl_custom_clean_rule_filters_text", "rule filters line (conditions only)")
+require(custom_vc, "cl_custom_clean_rule_title", "two-line rule cell: title")
+require(custom_vc, "cl_custom_clean_rule_filters_text", "two-line rule cell: filters")
+require(custom_vc, "还没有自定义规则", "empty-rules footer")
+require(custom_vc, "insertRowsAtIndexPaths", "add/edit/preset slides the rule in")
+require(custom_vc, "跳过：", "preview/run reports list the skipped paths")
+require(custom_vc, "失败：", "preview/run reports list the failed paths")
 
 # --- iPhone Shortcuts (v2.4): the App Intent lives in the MAIN APP
 # target, not in an extension. With openAppWhenRun = false, iOS
@@ -414,8 +457,16 @@ require(main, "handleShortcutURL", "URL dispatch to the tab bar")
 require(tabbar, "handleShortcutURL", "tab bar deep-links the clean page")
 require(tabbar, 'isEqualToString:@"cleaner"', "cleaner:// scheme check")
 require(settings, "快捷指令", "shortcuts guide in Settings")
-require(settings, "cleaner://clean", "clean URL in Settings")
-require(settings, "cleaner://scan", "scan URL in Settings")
+# v2.6: the cleaner:// copy buttons are GONE from Settings (and from the
+# guide). cleaner://clean opens the app + a confirm dialog by design,
+# and promoting it as a shortcut is what made the user tap it and land
+# on the clean page. The scheme stays registered for deep links, but it
+# is no longer offered as a shortcut. The mentions that remain in the
+# sources are comments explaining the removal, not copy buttons.
+forbid(settings, '@"cleaner://clean"', "copy-clean button in Settings")
+forbid(settings, '@"cleaner://scan"', "copy-scan button in Settings")
+forbid(settings, "copy-clean", "copy-clean action in Settings")
+forbid(settings, "copy-scan", "copy-scan action in Settings")
 require(settings, "不打开应用", "background shortcut copy in Settings")
 require(settings, "清理全部缓存", "intent name in Settings")
 require(cleaner, "startShortcutAction", "cleaner page shortcut entry point")
@@ -423,24 +474,49 @@ require(cleaner, "startShortcutAction", "cleaner page shortcut entry point")
 # --- Shortcuts guide (v2.5): the user could not find the shortcut at all
 # (20:44 screenshot: search "cleaner" in the Shortcuts app → 0 results;
 # 20:46: the phone really runs v0.2.4 (1), already opened, still 0 — "not
-# installed / never opened" are both ruled out. Root cause, verified on
-# the v2.4 binary: -dead_strip deleted the intent types; keepAlive only
-# referenced their metadata). The guide page states the preconditions
-# first (install 0.2.5, open Cleaner once, let the system index, then
-# search), shows a LIVE status read from the real registration (not a
-# hardcoded string), and has a button that opens the Shortcuts app.
-# "Not found" is NOT reported as fixed until the user finds it on-device
-# and taps it once.
+# installed / never opened" are both ruled out. The cause was NEVER
+# established: the 20:46 "optimizer removed the types" diagnosis was
+# WRONG and is withdrawn — the types WERE in the v2.4 binary, proven by
+# the __swift5_types descriptors. v2.6 therefore does not assert a fix:
+# the guide states the preconditions (install 0.2.6, open Cleaner once,
+# let the system index, then search), shows a LIVE status read from the
+# real registration (not a hardcoded string), shows the LAST RUN (what
+# the shortcut actually did, including whether the app was opened for
+# it), and has a button that opens the Shortcuts app. "Not found" is NOT
+# reported as fixed until the user finds it on-device and taps it once.
 guide = read(APP / "CLShortcutsGuideViewController.m")
 require(guide, "shortcutTitles", "guide shows the registered shortcut titles")
 require(guide, "cl-ui-launched-once", "guide shows whether the app was launched once")
 require(guide, "shortcuts://", "button opens the Shortcuts app")
-require(guide, "先装 0.2.5", "precondition: install 0.2.5 first")
+require(guide, "先装 0.2.6", "precondition: install 0.2.6 first")
 require(guide, "打开一次 Cleaner", "precondition: open Cleaner once so the system indexes")
 require(guide, "重启手机", "fallback: restart the phone to re-index")
 require(guide, "不需要服务器", "no-server note in the guide")
+require(guide, "上次运行", "guide shows the last intent run")
+require(guide, "cl_intent_last_run", "last run read from the App Group diagnostics")
+require(guide, "后台运行，未打开应用", "last run distinguishes a headless run")
+require(guide, "彻底退出", "force-quit caveat in the guide")
+forbid(guide, '@"cleaner://clean"', "copy-clean button in the guide")
+forbid(guide, "copy-clean", "copy-clean action in the guide")
+forbid(guide, "0.2.4 有个构建问题导致意图根本没进包", "false 0.2.4 build-problem text is gone")
+forbid(guide, "dead_strip deleted the intent types", "disproven dead-strip root cause is gone")
 require(settings, "CLShortcutsGuideViewController", "Settings opens the guide page")
 require(main, "cl-ui-launched-once", "scene launch marks the app as launched once")
+
+# --- Shortcuts diagnostics (v2.6): every intent run is recorded in the
+# App Group (timestamp, freed bytes, apps cleaned/remaining, partial /
+# timeout, whether the run was headless) so the next "it opened the app"
+# report can be told apart from a headless intent run. Headless is
+# detected in Swift via connectedScenes: no scene means the app was not
+# open. The intent is fully self-contained for headless launch (grant +
+# scan + clean in the headless process via the App Group cache, no
+# dependency on app UI state).
+require(intents, "cl_intent_record_run", "intent records each run")
+require(intents, "connectedScenes.isEmpty", "headless detection: no connected scene")
+require(intents, "openAppWhenRun = false", "intent still declared background (v2.6 re-check)")
+require(background, "cl_intent_record_run", "diagnostics writer in Core")
+require(background, "cl_intent_last_run", "diagnostics reader in Core")
+require(background, "cl-intent-last-run.plist", "last-run plist in the App Group")
 
 # --- Directory picker for custom rules (v2.5): tap 添加规则 opens a NEW
 # page (BleachBit's Custom tab + file picker; SD Maid SE's custom-filter
@@ -468,6 +544,18 @@ require(custom, "CLCustomRuleScopeFiltered", "directory scope: filtered")
 require(custom, "rootsMayBeAnywhere", "filtered walk lifts the Caches/tmp roots restriction")
 require(custom, "cl_custom_clean_resolve_pasted_path", "pasted-path resolution in the engine")
 
+# --- Directory picker polish (v2.6): the picked directory must be
+# unmistakable, the filter fields labelled, an empty directory must say
+# so, and the listing fades in. ---
+require(picker, "当前目录", "picked-directory summary row")
+require(picker, "这个目录是空的", "empty-directory state row")
+require(picker, 'label:@"扩展名"', "labelled extension field")
+require(picker, 'label:@"文件名"', "labelled name field")
+require(picker, 'label:@"保留天数"', "labelled age field")
+require(picker, 'label:@"最小大小"', "labelled min-size field")
+require(picker, 'label:@"最大大小"', "labelled max-size field")
+require(picker, "duration:0.25", "listing cross-dissolve")
+
 # --- Mode line (v2.5): v2.1's 15pt + max 2 lines did not stop the
 # mid-word break ("<App Group> [沙 / 盒模式]" on the 20:46 screenshot).
 # The copy is now just "沙盒模式" — short enough to never break.
@@ -488,13 +576,28 @@ require(cleaner, "doneView", "spring success check in the summary card")
 require(cleaner, "usingSpringWithDamping", "spring animation for the success check")
 require(cleaner, "notificationOccurred", "success haptic")
 
+# --- Animations (v2.6): everything EXCEPT the clean animation gets
+# polish (the clean animation is very good, the user said — do not touch
+# it; CLCleanerViewController.m is untouched in this round). Home status
+# card fades on a state change (only when on screen); tab switches
+# crossfade the incoming page (except the cleaner tab, whose own
+# animation must not be disturbed); the picker listing cross-dissolves;
+# the apps list cross-dissolves on first load; rules slide in on
+# add/edit/preset. System animations only, never blocking the main thread.
+require(home, "statusCard.alpha = 0", "home status card fades on state change")
+require(home, "self.view.window", "home fade only when on screen")
+require(tabbar, "didSelectViewController", "tab switch crossfade")
+require(tabbar, "duration:0.18", "tab crossfade duration")
+require(read(APP / "CLTabBarController.h"), "UITabBarControllerDelegate", "tab bar delegate conformance")
+forbid(cleaner, "v2.6", "clean page untouched in v2.6 (the clean animation stays exactly as-is)")
+
 # --- App entry: tab container root, resolvers set, restore recovery. ---
 require(main, "CLTabBarController", "tab bar root")
 require(main, "cl_set_container_label_resolver", "container label resolver")
 require(main, "cl_set_container_list_provider", "container list provider")
 require(main, "cl_recover_interrupted_restore", "interrupted restore recovery")
 
-# --- Build: only the v2 sources, iPhone only, 0.2.5. ---
+# --- Build: only the v2 sources, iPhone only, 0.2.6. ---
 for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.m",
                "Core/CLLaunchServices.m", "Core/CLCustomClean.m", "Core/CLBackgroundClean.m",
                "App/CLUI.m",
@@ -520,8 +623,8 @@ forbid(build, "-Os -dead_strip", "dead-strip removed from the link")
 runner = read(ROOT / "tests" / "run_all_tests.sh")
 for source in ("App/CLRulePickerViewController.m", "App/CLShortcutsGuideViewController.m"):
     require(runner, source, f"strict-check source {source}")
-require(info, "<string>0.2.5</string>", "version 0.2.5")
-forbid(info, "<string>0.2.4</string>", "old version 0.2.4")
+require(info, "<string>0.2.6</string>", "version 0.2.6")
+forbid(info, "<string>0.2.5</string>", "old version 0.2.5")
 forbid(info, "CFBundleIcons~ipad", "iPad icon set")
 forbid(info, "UISupportedInterfaceOrientations~ipad", "iPad orientations")
 

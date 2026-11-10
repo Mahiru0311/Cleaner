@@ -259,7 +259,12 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
             self->_loading = NO;
             self->_entries = entries;
             self->_status = error;
-            [self.tableView reloadData];
+            // v2.6: the listing fades in (system cross-dissolve) instead
+            // of popping in when a directory loads.
+            [UIView transitionWithView:self.tableView duration:0.25
+                               options:UIViewAnimationOptionTransitionCrossDissolve
+                            animations:^{ [self.tableView reloadData]; }
+                            completion:nil];
         });
     });
 }
@@ -278,9 +283,12 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
         return apps.count ?: 1;
     }
     switch (section) {
-        case CLRulePickerSectionApp: return 1;
+        case CLRulePickerSectionApp: return 2;  // v2.6: app row + current-directory row
         case CLRulePickerSectionScope: return _scopeFiltered ? 7 : 2;
-        case CLRulePickerSectionEntries: return (_loading || _status) ? 1 : (NSInteger)_entries.count;
+        // v2.6: an empty directory shows one empty-state row instead of
+        // a blank section, so it is clear the directory is empty (and not
+        // still loading or broken).
+        case CLRulePickerSectionEntries: return (_loading || _status) ? 1 : MAX((NSInteger)_entries.count, 1);
         default: return 2;  // manual path field + go row
     }
 }
@@ -321,14 +329,27 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
     return @"也可以直接粘贴一条目录路径（相对路径如 Library/Caches/xxx，或从目录页复制的完整路径），点「前往」跳过去。";
 }
 
-- (UITableViewCell *)cellWithTextField:(NSString *)reuseID placeholder:(NSString *)placeholder
-                             keyboard:(UIKeyboardType)keyboard field:(UITextField **)out prefill:(NSString *)prefill
+// v2.6: filter fields are labelled (label on the left, field on the
+// right) instead of bare placeholders — a half-filled form must still
+// say what each row is.
+- (UITableViewCell *)cellWithTextField:(NSString *)reuseID label:(nullable NSString *)label
+                           placeholder:(NSString *)placeholder
+                              keyboard:(UIKeyboardType)keyboard field:(UITextField **)out prefill:(NSString *)prefill
 {
     UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:reuseID];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(16, 0, cell.contentView.bounds.size.width - 32, 44)];
+        CGFloat x = 16;
+        if (label.length) {
+            UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(16, 0, 76, 44)];
+            lb.text = label;
+            lb.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+            lb.autoresizingMask = UIViewAutoresizingFlexibleHeight;
+            [cell.contentView addSubview:lb];
+            x = 100;
+        }
+        UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(x, 0, cell.contentView.bounds.size.width - x - 16, 44)];
         tf.placeholder = placeholder;
         tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
         tf.autocorrectionType = UITextAutocorrectionTypeNo;
@@ -370,14 +391,32 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
     UIListContentConfiguration *c = nil;
     switch (indexPath.section) {
         case CLRulePickerSectionApp: {
-            cell = [tableView dequeueReusableCellWithIdentifier:@"pickapp"]
-                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"pickapp"];
+            if (indexPath.row == 0) {
+                cell = [tableView dequeueReusableCellWithIdentifier:@"pickapp"]
+                    ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"pickapp"];
+                c = cell.defaultContentConfiguration;
+                c.text = _app.name;
+                c.secondaryText = _app.bundleID;
+                c.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+                cell.contentConfiguration = c;
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                return cell;
+            }
+            // v2.6: the picked directory, unmistakable — the row shows
+            // the directory itself (not just the app), with a checkmark:
+            // this is the directory the top-right 选择 will confirm.
+            cell = [tableView dequeueReusableCellWithIdentifier:@"pickdir"]
+                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"pickdir"];
             c = cell.defaultContentConfiguration;
-            c.text = _app.name;
-            c.secondaryText = _app.bundleID;
+            NSString *rel = [self relativePath];
+            c.text = rel.length ? rel : @"容器根目录";
+            c.secondaryText = @"当前目录 · 点右上角「选择」确认的就是它";
             c.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+            c.image = [UIImage systemImageNamed:@"folder.fill"];
+            c.imageProperties.tintColor = UIColor.systemBlueColor;
             cell.contentConfiguration = c;
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            cell.accessoryType = UITableViewCellAccessoryCheckmark;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
             return cell;
         }
         case CLRulePickerSectionScope: {
@@ -396,35 +435,35 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
             switch (indexPath.row) {
                 case 2: {
                     UITextField *field = nil;
-                    UITableViewCell *fc = [self cellWithTextField:@"filter-ext" placeholder:@"扩展名，如 .mp4,.mov"
+                    UITableViewCell *fc = [self cellWithTextField:@"filter-ext" label:@"扩展名" placeholder:@"如 .mp4,.mov"
                                                          keyboard:UIKeyboardTypeDefault field:&field prefill:_prefillExt];
                     if (field) _extField = field;
                     return fc;
                 }
                 case 3: {
                     UITextField *field = nil;
-                    UITableViewCell *fc = [self cellWithTextField:@"filter-name" placeholder:@"文件名包含，如 thumb"
+                    UITableViewCell *fc = [self cellWithTextField:@"filter-name" label:@"文件名" placeholder:@"包含，如 thumb"
                                                          keyboard:UIKeyboardTypeDefault field:&field prefill:_prefillName];
                     if (field) _nameField = field;
                     return fc;
                 }
                 case 4: {
                     UITextField *field = nil;
-                    UITableViewCell *fc = [self cellWithTextField:@"filter-age" placeholder:@"仅删 N 天前的文件"
+                    UITableViewCell *fc = [self cellWithTextField:@"filter-age" label:@"保留天数" placeholder:@"仅删 N 天前的文件"
                                                          keyboard:UIKeyboardTypeDecimalPad field:&field prefill:_prefillAge];
                     if (field) _ageField = field;
                     return fc;
                 }
                 case 5: {
                     UITextField *field = nil;
-                    UITableViewCell *fc = [self cellWithTextField:@"filter-min" placeholder:@"仅删大于 N KB 的文件"
+                    UITableViewCell *fc = [self cellWithTextField:@"filter-min" label:@"最小大小" placeholder:@"仅删大于 N KB 的文件"
                                                          keyboard:UIKeyboardTypeDecimalPad field:&field prefill:_prefillMin];
                     if (field) _minField = field;
                     return fc;
                 }
                 default: {
                     UITextField *field = nil;
-                    UITableViewCell *fc = [self cellWithTextField:@"filter-max" placeholder:@"仅删小于 N KB 的文件"
+                    UITableViewCell *fc = [self cellWithTextField:@"filter-max" label:@"最大大小" placeholder:@"仅删小于 N KB 的文件"
                                                          keyboard:UIKeyboardTypeDecimalPad field:&field prefill:_prefillMax];
                     if (field) _maxField = field;
                     return fc;
@@ -444,6 +483,15 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
             if (_status) {
                 c.text = _status;
                 c.secondaryText = @"返回上一级，或回到应用列表重新进入。";
+                c.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+                cell.contentConfiguration = c;
+                cell.accessoryType = UITableViewCellAccessoryNone;
+                return cell;
+            }
+            if (!_entries.count) {
+                // v2.6: empty-state row — the directory is genuinely empty.
+                c.text = @"这个目录是空的";
+                c.secondaryText = @"没有文件也没有子目录。";
                 c.secondaryTextProperties.color = UIColor.secondaryLabelColor;
                 cell.contentConfiguration = c;
                 cell.accessoryType = UITableViewCellAccessoryNone;
@@ -478,7 +526,7 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
         default: {
             if (indexPath.row == 0) {
                 UITextField *field = nil;
-                UITableViewCell *fc = [self cellWithTextField:@"manual-path"
+                UITableViewCell *fc = [self cellWithTextField:@"manual-path" label:@"路径"
                                                   placeholder:@"Library/Caches/xxx 或完整路径"
                                                      keyboard:UIKeyboardTypeDefault field:&field prefill:@""];
                 if (field) _manualField = field;
@@ -509,7 +557,9 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
     }
     switch (indexPath.section) {
         case CLRulePickerSectionApp:
-            // Change app: back to the app list in place.
+            // v2.6: row 0 changes the app; row 1 is the picked directory
+            // (unmistakable, with a checkmark) and is not tappable.
+            if (indexPath.row != 0) return;
             _app = nil;
             _path = nil;
             [self reloadForCurrentState];

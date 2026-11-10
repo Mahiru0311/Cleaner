@@ -271,6 +271,10 @@ typedef struct {
     unsigned long long matchedBytes;
     NSUInteger skipped;  // pattern-matched but filtered out by age/size
     NSMutableArray<NSString *> *sample;  // container-relative paths, capped at 50
+    // v2.6: every failed / skipped file, listed with its reason, capped
+    // at 50 each — a failure or skip is never silent.
+    NSMutableArray<NSString *> *failedPaths;   // "rel/path · 删除失败" etc.
+    NSMutableArray<NSString *> *skippedPaths;  // "rel/path · 太新" / "· 太小" / "· 太大"
     // v2.4 hardening: the container identity is re-checked immediately
     // before every delete — if the container was replaced mid-walk, the
     // walk stops instead of deleting from a different container.
@@ -298,7 +302,14 @@ static void cl_clean_match_fd(int dirfd, NSString *path, NSString *container, CL
         if (!name) { m->limited = YES; continue; }
         NSString *childPath = [path stringByAppendingPathComponent:name];
         struct stat st;
-        if (fstatat(dirfd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) { m->failed++; continue; }
+        if (fstatat(dirfd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+            m->failed++;
+            if (m->failedPaths.count < 50) {
+                [m->failedPaths addObject:[NSString stringWithFormat:@"%@ · 无法读取",
+                                           [childPath substringFromIndex:container.length + 1]]];
+            }
+            continue;
+        }
         if (S_ISDIR(st.st_mode)) {
             NSString *rel = [childPath substringFromIndex:container.length + 1];
             if (cl_clean_match_excluded(rel, m->excludes)) continue;
@@ -316,9 +327,17 @@ static void cl_clean_match_fd(int dirfd, NSString *path, NSString *container, CL
             NSString *lower = name.lowercaseString;
             BOOL match = NO;
             for (NSString *ext in m->extensions) {
-                if (ext.length && [lower hasSuffix:ext.lowercaseString]) { match = YES; break; }
+                // v2.6: exact extension match. The name must be LONGER
+                // than the extension and end with it — a bare ".mp4"
+                // dotfile is not an mp4 file, and ".mp4" never matches
+                // ".mp4.bak" (no .mp4 suffix) or "xmp4" (no dot).
+                // Case-insensitive: both sides lowercased.
+                NSString *lext = ext.lowercaseString;
+                if (lext.length && lower.length > lext.length && [lower hasSuffix:lext]) { match = YES; break; }
             }
             if (!match) {
+                // Name-substring matching is case-insensitive too (both
+                // sides lowercased) — documented, not accidental.
                 for (NSString *sub in m->names) {
                     if (sub.length && [lower containsString:sub.lowercaseString]) { match = YES; break; }
                 }
@@ -326,14 +345,26 @@ static void cl_clean_match_fd(int dirfd, NSString *path, NSString *container, CL
             if (!match) continue;
             // v2.4 filters: a pattern match that is too new, too small or
             // too big is skipped (counted), not deleted and not an error.
+            // v2.6: every skipped file is listed with its reason.
+            NSString *relPath = [childPath substringFromIndex:container.length + 1];
             if (m->minAgeSeconds > 0) {
                 NSTimeInterval mtime = (NSTimeInterval)st.st_mtimespec.tv_sec +
                     (NSTimeInterval)st.st_mtimespec.tv_nsec / 1000000000.0;
-                if (mtime > m->now - m->minAgeSeconds) { m->skipped++; continue; }
+                if (mtime > m->now - m->minAgeSeconds) {
+                    m->skipped++;
+                    if (m->skippedPaths.count < 50) {
+                        [m->skippedPaths addObject:[relPath stringByAppendingString:@" · 太新"]];
+                    }
+                    continue;
+                }
             }
             if ((m->minSize > 0 && (unsigned long long)st.st_size < m->minSize) ||
                 (m->maxSize > 0 && (unsigned long long)st.st_size > m->maxSize)) {
                 m->skipped++;
+                if (m->skippedPaths.count < 50) {
+                    NSString *why = (m->minSize > 0 && (unsigned long long)st.st_size < m->minSize) ? @" · 太小" : @" · 太大";
+                    [m->skippedPaths addObject:[relPath stringByAppendingString:why]];
+                }
                 continue;
             }
             // v2.4 hardening: re-validate the container identity
@@ -343,6 +374,9 @@ static void cl_clean_match_fd(int dirfd, NSString *path, NSString *container, CL
                 if (lstat(m->container.fileSystemRepresentation, &cst) != 0 ||
                     cst.st_dev != m->containerDevice || cst.st_ino != m->containerInode) {
                     m->failed++;
+                    if (m->failedPaths.count < 50) {
+                        [m->failedPaths addObject:[relPath stringByAppendingString:@" · 容器已变化，已停止"]];
+                    }
                     m->limited = YES;
                     m->stop = YES;
                     return;
@@ -350,7 +384,13 @@ static void cl_clean_match_fd(int dirfd, NSString *path, NSString *container, CL
             }
             struct stat cur;
             if (fstatat(dirfd, entry->d_name, &cur, AT_SYMLINK_NOFOLLOW) != 0 ||
-                !CLSameObject(&st, &cur)) { m->failed++; continue; }
+                !CLSameObject(&st, &cur)) {
+                m->failed++;
+                if (m->failedPaths.count < 50) {
+                    [m->failedPaths addObject:[relPath stringByAppendingString:@" · 文件已变化，跳过"]];
+                }
+                continue;
+            }
             if (m->dryRun) {
                 m->matched++;
                 m->matchedBytes += (unsigned long long)st.st_size;
@@ -363,7 +403,19 @@ static void cl_clean_match_fd(int dirfd, NSString *path, NSString *container, CL
                 m->freed += (unsigned long long)st.st_size;
                 m->matched++;
                 m->matchedBytes += (unsigned long long)st.st_size;
-            } else m->failed++;
+                // v2.6: the sample is the matched set in BOTH modes — in
+                // a dry-run it is "would delete", in a real run it is
+                // "deleted" — so a test can prove preview set == delete
+                // set instead of comparing only byte totals.
+                if (m->sample && m->sample.count < 50) {
+                    [m->sample addObject:[childPath substringFromIndex:m->container.length + 1]];
+                }
+            } else {
+                m->failed++;
+                if (m->failedPaths.count < 50) {
+                    [m->failedPaths addObject:[relPath stringByAppendingString:@" · 删除失败"]];
+                }
+            }
         }
         // Links and special files: never followed, never deleted by a match rule.
     }
@@ -421,7 +473,8 @@ BOOL cl_clean_matching_files_filtered(NSString *container, NSArray<NSString *> *
                        .excludes = excludedRelativePaths ?: @[], .container = container,
                        .minAgeSeconds = opts.minAgeSeconds, .minSize = opts.minSize,
                        .maxSize = opts.maxSize, .now = NSDate.date.timeIntervalSince1970,
-                       .dryRun = opts.dryRun, .sample = [NSMutableArray new] };
+                       .dryRun = opts.dryRun, .sample = [NSMutableArray new],
+                       .failedPaths = [NSMutableArray new], .skippedPaths = [NSMutableArray new] };
     struct stat cst;
     if (lstat(container.fileSystemRepresentation, &cst) == 0) {
         m.containerDevice = cst.st_dev;
@@ -444,7 +497,8 @@ BOOL cl_clean_matching_files_filtered(NSString *container, NSArray<NSString *> *
     if (resultOut) {
         *resultOut = (CLCleanMatchResult){ .freed = m.freed, .failed = m.failed,
             .skipped = m.skipped, .matched = m.matched, .matchedBytes = m.matchedBytes,
-            .samplePaths = [m.sample copy], .limited = m.limited };
+            .samplePaths = [m.sample copy], .failedPaths = [m.failedPaths copy],
+            .skippedPaths = [m.skippedPaths copy], .limited = m.limited };
     }
     if (m.stop) {
         if (reason) *reason = @"容器在清理过程中发生变化，已停止";

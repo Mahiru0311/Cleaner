@@ -899,3 +899,60 @@ __swift5_proto / __swift5_typeref），裸名 CleanerShortcuts 4 次、CleanCach
 （清理后仍 114）、模式行不断词、规则筛选 + 试运行预览——都须用户在 iPhone 17 / iOS 27.0 上确认。
 v2.4 的签名/安装问题原因仍未知（用户说装不上 v2.4；短链 https://is.gd/mAm4mr 已给，2026-11-12
 20:35 CST 过期）；v2.5 之前别让用户测。
+## 13. v2.6（2026-11-10 晚，v2.5 真机反馈：规则不严谨 + 界面不好看 + 应用页每次打开都刷新 + 快捷指令仍要打开应用 + 其它动画还不行）
+
+用户原话四条（2026-11-10 21:55）：（1）「规则清理不太严谨，界面也不太好看」；（2）「每次开应用菜单就会自己刷新呢 很麻烦」；（3）「快捷指令，他必须要打开应用，而且应用在后台才能使用，而且点击快捷指令，它还是会跳转到应用清理」；（4）「动画的话还是得改清理，这个就很好啊，非常的好看 但是其他地方还不太行」。清理动画用户点名「非常的好看」——`App/CLCleanerViewController.m` 本轮**一个字没动**（`browser_ui_regressions.py` 有 `forbid(cleaner, "v2.6")` 兜底）。
+
+### 1. 规则严谨性（Core）
+
+- **扩展名精确匹配**（`Core/CLCache.m`）：名字必须比扩展名**长**且以后缀结尾——裸 `.mp4` 点文件不再匹配（v2.5 之前它会匹配，这是当时留下的口子；`.mp4.bak` 和 `xmp4` 本来就不匹配，因为没有 `.mp4` 后缀）。扩展名与文件名子串匹配都是大小写不敏感（两侧都小写），规则写进 `Core/CLCache.h` 文档，不再是「碰巧」。
+- **预览集 == 实际删除集**：预览和执行走**同一条** `cl_clean_matching_files_filtered` 遍历、同一个 matcher，唯一区别是 `dryRun`（计数 vs unlink）。且执行时也会记录 sample（以前只在 dry-run 记）——所以预览显示的集合就是执行删的集合。ObjC 测试用真 API 证明：3 文件 fixture，dry-run sample 集 == run sample 集，dry-run 字节 == run 释放字节。
+- **年龄/大小过滤在预览和执行一致**：同一套 `CLCleanMatchOptions`，不再有两份逻辑。
+- **容器身份重验证**：每次删除前立即重验（v2.4 已有，本轮未改，只补了失败路径记录）。
+- **危险范围拒绝**：容器根、Documents、Library 本身（v2.5 已有，本轮未改）。
+- **逐项记账 + 不再静默失败**：`CLCleanMatchResult` 新增 `failedPaths` / `skippedPaths`（各最多 50 条，格式 `相对路径 · 原因`）；失败原因：`无法读取` / `容器已变化，已停止` / `文件已变化，跳过` / `删除失败`；跳过原因：`太新` / `太小` / `太大`。注意语义：**不匹配扩展名/文件名的文件既不算 matched 也不算 skipped**——skipped 的意思是「匹配了模式，但被年龄/大小过滤器排除」，并带原因列出。`cl_custom_clean_apply_rule` 把两条分支的结果都汇总进每条规则的 entry；dry-run 结果、单条规则运行结果、全量运行的 `perRule` 都带这两份列表；校验失败的 early return 也补了空数组（格式一致）。预览弹窗和两次运行报告（单条/全部）都把跳过/失败的前 10 条列出来（加「…等 N 个」），不再写「详见日志」。
+
+### 2. 规则 UI（App）
+
+- **规则列表两行 cell**（`App/CLCustomCleanViewController.m`）：主行是标题（`cl_custom_clean_rule_title`：应用 + 目录/类型 + 范围，如「微信 · 目录 Library/Caches/videos（按条件）」），副行是条件 + 状态（`cl_custom_clean_rule_filters_text`，如「扩展.mp4 · 30天前 · 已启用」）。`cl_custom_clean_rule_summary` 现在就是 title + filters，输出内容与 v2.5 **完全相同**（顺序不变：扩展名、文件名、年龄、最小、最大、子目录），只是拆成两个函数供 cell 用。
+- **空规则状态**：规则数为 0 时 section footer 说明「还没有自定义规则……点「添加规则」……还能先预览再确认」，而不是只剩一个「添加规则」行。
+- **增删改有动画**：新增规则滑入（insertRows）、编辑原地淡入（reloadRows，按 UUID 定位）、预设加入滑入；首条规则会改 footer，改 footer 的情况走 reloadData；计数对不上预期时也走 reloadData，绝不冒 table 不一致崩溃的风险。
+- **选择器**（`App/CLRulePickerViewController.m`）：App 区现在两行——应用行 + 「当前目录」行（目录路径本身 + 副行「当前目录 · 点右上角「选择」确认的就是它」，文件夹图标 + 对勾，不可点，选中的目录一目了然）；空目录显示「这个目录是空的」而不是空白区；五个过滤字段和手动路径字段都带左侧标签（扩展名/文件名/保留天数/最小大小/最大大小/路径），而不是只有 placeholder；目录加载完成时 0.25s 交叉淡入。
+
+### 3. 应用页手动刷新（`App/CLAppsViewController.m`）
+
+- 右上角刷新按钮（`arrow.clockwise`，无障碍标签「刷新」），点一下 = `userRefresh` → 失效缓存 + 真正重扫（不是 v2.2 那个静默无操作的 invalidateScan 旧 bug）。
+- `viewWillAppear` 不再重扫：只有「从未完成过加载」（如首次扫描被切 tab 取消）时才扫；**> 60s 陈旧重扫已删**。备份/恢复/清空完成后仍会重扫（`dir.onDataChanged`）。
+- 表头显示「上次扫描 HH:mm」，用户不用靠重扫判断列表新不新鲜。
+- 扫描进行中刷新按钮禁用，点两次不会启动两次扫描；下拉刷新保留（与「不自动刷新」不冲突——它是用户主动触发的）。
+- 首次加载完成时 0.3s 交叉淡入；之后的手动刷新直接 reload（用户要的是刷新，不是表演）。
+
+### 4. 快捷指令真正后台（Intents + Core + 指引页）
+
+- **用户最可能点的是 URL scheme**：`cleaner://clean` 的行为就是「打开应用 + 确认框」——而指引页和设置里一直放着「复制 cleaner://clean」按钮。所以（c）**两个复制按钮都删了**（指引页的「备用办法」整区、设置的复制 cleaner://clean / cleaner://scan 两行 + 处理函数）；scheme 仍注册（深链用），但不再作为快捷指令推广。`browser_ui_regressions.py` 用 `forbid` 兜底（字面量 `@"cleaner://clean"` / `@"cleaner://scan"` 与 `copy-clean` / `copy-scan` 动作）。
+- **意图本身已是后台**：`openAppWhenRun = false` 在源码里（`Intents/CleanerIntents.swift:46`，回归测试重申）。（a）无头自包含已按代码核对并写进 Swift 文件头注释：`CLBackgroundCleanRun` 不碰任何需要 scene 或 UI 的东西——授权在进程内签发（与界面清理同一个 worse_query 调用）、度量缓存与自定义规则 plist 在应用自己的 Caches 目录（无头启动是同一个应用、同一个容器）、扫描/清理/规则全在后台队列；`main.m` 只做 keepAlive + resolvers + UIApplicationMain，没有 scene 时 scene delegate 不跑。无头启动真正需要的是两样：App Group 权限完好（重签名必须保留）+ 应用**没有被彻底退出**。
+- （b）**运行诊断**：每次意图运行都记到 App Group（`cl-intent-last-run.plist`，`Core/CLBackgroundClean.m` 的 `cl_intent_record_run` / `cl_intent_last_run`；桥接头已 import `CLBackgroundClean.h`，Swift 可直接调）：时间、释放字节（含自定义规则部分）、清理/剩余/总数、失败数、是否部分完成/超时、耗时、**是否无头**（Swift 里 `UIApplication.shared.connectedScenes.isEmpty` 判定——没有 scene 就是应用没打开；挂起的后台应用仍有 scene，所以是 false）、错误（有的话）；另计 `runCount`。指引页新增「上次运行」区：上次运行一行（时间 · 已释放 X · 清理了 N 个应用 · 还有 M 个未清理 · 超时/部分完成 · 后台运行，未打开应用 / 应用已在后台时运行）+ 运行次数；没运行过就显示「还没有运行过」。下次用户再说「它打开了应用」，先看这里：无头运行会写「后台运行，未打开应用」，而 cleaner:// 跳转不会在这里留记录。
+- （d）**指引页假话已纠正**：`App/CLShortcutsGuideViewController.m:87` 的「0.2.4 有个构建问题导致意图根本没进包」是错的——类型一直在包里（`__swift5_types` 描述符证明），0.2.4 搜不到的真正原因至今未知；头文件注释里的「-dead_strip 删了意图类型」说法一并纠正。指引页现在不宣称修好了，只说前提条件（装 0.2.6、打开一次 Cleaner、系统索引后去搜）、显示 live 状态和上次运行。
+- （e）**彻底退出的诚实限制**，写进指引页 footer：把 Cleaner 从应用切换器划掉（彻底退出）后，系统在下次打开它之前不会在后台启动它；平时留在后台（挂起）没关系，不需要管它。如果快捷指令点下去完全没反应，先检查这一项。
+- 仍未变的验收标准：只有用户在手机上搜到「清理全部缓存」、点一下、后台清完不打开应用，才算修好。
+
+### 5. 动画（除清理动画外）
+
+系统动画 only，不阻塞主线程：
+- 首页：状态卡在状态变化时淡入（`statusCard.alpha` 0→1，0.3s），只在 view 已在 window 里时做（首次加载不淡）。
+- Tab 切换：`UITabBarControllerDelegate` 的 `didSelect` 里 0.18s 交叉淡入新页面（只在 on screen 时）；**清理 tab 除外**——它的清理动画不能被竞争的淡入打扰。
+- 选择器：目录加载完成 0.25s 交叉淡入。
+- 应用页：首次加载完成 0.3s 交叉淡入。
+- 规则列表：新增/预设滑入、编辑淡入（见上）。
+- 清理页的扫描行本来就带淡入插入（v2.3），本轮未动；设置页导航本来就是系统 push 动画，未动。
+
+### 6. 版本与其它
+
+- 版本 0.2.5 → **0.2.6**（`Info.plist`；另把首页两处写死的 `0.2.4` 兜底文案同步到 0.2.6；指引页/设置里的 `0.2.5` 文案同步到 0.2.6）。二进制大小目标不变：本轮**没有**重开 -O/-flto（§12 末尾的建议未采纳——先保证意图类型稳，再谈大小；如实上报实际大小）。
+- ObjC 测试新增 v2.6 块（`tests/CLCustomCleanTests.m`，macOS runner 跑）：扩展名精确性（a.mp4 + c.MP4 匹配，b.mp4.bak / xmp4 / 裸 `.mp4` 不匹配；sample 恰好是两个真 mp4 文件）、文件名子串大小写不敏感（"THUMB" 匹配 myThumb.jpg + thumb2.jpg）、年龄过滤跳过带原因（2 个新文件跳过，各带「· 太新」）、chmod 0555 目录内 unlink 失败记 failed 带「· 删除失败」（假设非 root 运行者——GitHub Actions macOS runner 是用户 `runner`，不是 root；测完 chmod 回 0755）、预览集 == 实际删除集（真 API：dry-run sample 集 == run sample 集，15 字节对 15 字节）、规则标题/条件拆分（title 含目录 +「按条件」且不含「扩展」；filters 恰为「扩展.mp4」；summary 仍是 title + filters；无条件的规则 filters 为 nil、summary == title）。
+- `browser_ui_regressions.py` 新增 v2.6 断言：扩展名精确匹配（`lower.length > lext.length`）、failedPaths/skippedPaths 贯通、标题/条件函数、两行 cell、空规则 footer、insertRows、预览/运行报告列出跳过/失败路径；应用页手动刷新（刷新按钮、上次扫描、appear 只在从未完成时扫、扫描中禁用按钮、> 60s 重扫已删、首次加载淡入）；选择器打磨（当前目录行、空目录行、五个带标签字段、0.25s 淡入）；快捷指令诊断（`cl_intent_record_run` / `cl_intent_last_run` / `connectedScenes.isEmpty` / `cl-intent-last-run.plist`、指引页上次运行 + 彻底退出文案、无 cleaner:// 复制按钮、假 0.2.4 文案已删）；动画（首页淡入、tab 淡入 0.18s、清理页无 v2.6 痕迹）；版本 0.2.6（Info.plist 要求 0.2.6、禁 0.2.5）。另修正了 v2.5 留下的两处错误注释：指引页段的「-dead_strip 删了意图类型」根因说法（已证伪，见 §12 末尾的更正记录）。
+
+本地已验（Linux，无 Xcode）：`browser_ui_regressions.py` 通过；`python3 -m unittest discover -s tests -p 'test_*.py'` 17 个，2 个失败与 v2.0–v2.5 相同（`test_build` 两用例缺 `plutil`，Linux 固有）；`bash -n build.sh` 通过。ObjC 套件（新增 v2.6 块）只能在 macOS runner 上跑，待 Actions 验证。
+
+构建：Actions run ，IPA `~/workspace/downloads/cleaner-v2-6-ipa/Cleaner.ipa`，字节，SHA-256 。亲验：。
+真机验证仍未做：规则严谨性 + 规则列表/选择器 UI、应用页手动刷新（打开不自动刷、点刷新按钮才刷、上次扫描时间）、快捷指令点一下后台清完不打开应用（且不依赖应用在后台；指引页「上次运行」应显示「后台运行，未打开应用」）、其它动画——都须用户在 iPhone 17 / iOS 27.0 上确认。v2.4 的签名/安装问题原因仍未知（短链 https://is.gd/mAm4mr 已给，2026-11-12 20:35 CST 过期）；v2.5 短链 https://is.gd/NYKssf，2026-11-12 21:47 CST 过期。

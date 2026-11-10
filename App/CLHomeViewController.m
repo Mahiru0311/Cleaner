@@ -242,9 +242,10 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
 
 - (void)refreshStatus
 {
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.4";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.6";
     BOOL supported = cl_system_supported();
     BOOL hasGroup = cl_app_group() != nil;
+    CLHomeState previousState = self.state;
     if (!supported) {
         self.state = CLHomeStateUnsupported;
     } else if (!hasGroup) {
@@ -335,6 +336,14 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     self.groupStatusValueLabel.text = !hasGroup ? @"未授权"
         : (self.state == CLHomeStateChecking ? @"检查中…"
         : (self.state == CLHomeStateRestricted ? @"受限" : @"正常"));
+    // v2.6: the status card fades in on a state change (system animation
+    // only) instead of snapping to the new colour/text — but only when
+    // the view is actually on screen (no fade on the first load, when
+    // there is no window yet to fade in).
+    if (previousState != self.state && self.view.window) {
+        self.statusCard.alpha = 0;
+        [UIView animateWithDuration:0.3 animations:^{ self.statusCard.alpha = 1; }];
+    }
 }
 
 #pragma mark - Actions
@@ -534,7 +543,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     self.statusModeLabel = [self makeLabel:@"沙盒模式" font:[UIFont systemFontOfSize:15 weight:UIFontWeightMedium]
                                      color:UIColor.labelColor];
     self.statusModeLabel.numberOfLines = 2;
-    self.statusVersionLabel = [self makeLabel:@"版本：0.2.4" font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
+    self.statusVersionLabel = [self makeLabel:@"版本：0.2.6" font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
                                         color:UIColor.labelColor];
     UIStackView *statusTexts = [[UIStackView alloc] initWithArrangedSubviews:@[
         self.statusTitleLabel, self.statusModeLabel, self.statusVersionLabel]];
@@ -620,7 +629,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     UIView *info = [UIView new];
     info.backgroundColor = UIColor.systemBackgroundColor;
     info.layer.cornerRadius = 28;
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.4";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.6";
     NSString *build = NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"1";
     self.groupStatusValueLabel = [UILabel new];
     NSArray<UIView *> *rows = @[

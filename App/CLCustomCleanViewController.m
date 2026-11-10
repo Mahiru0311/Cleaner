@@ -93,8 +93,13 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    if (section == CLCustomSectionRules)
+    if (section == CLCustomSectionRules) {
+        // v2.6: an empty-rules state (the list is not just an "添加规则"
+        // row — the user should see what the page is for when it's empty).
+        if (!_rules.count)
+            return @"还没有自定义规则。点「添加规则」选一个应用里的目录，再定好条件——以后清理时就会按规则删除，还能先预览再确认。";
         return @"点一条规则可以预览它会删什么（匹配文件数 + 大小），确认后再清理。点「添加规则」打开目录选择页：选应用、进它的容器里选目录，再选「清空整个目录」或「按条件删」。目录规则不能指向容器根目录、Documents 或 Library 本身；非缓存目录会先警告一次。清理整个应用的数据请用应用页的「清空数据」（会先备份）。";
+    }
     if (section == CLCustomSectionPresets) return @"点一下把预设的规则加入规则列表。";
     return @"被排除的应用和文件夹不会被任何规则清理。";
 }
@@ -116,8 +121,17 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
             return cell;
         }
         NSDictionary *rule = _rules[(NSUInteger)indexPath.row];
-        c.text = cl_custom_clean_rule_summary(rule);
-        c.secondaryText = [rule[CLCustomRuleEnabledKey] boolValue] ? @"已启用" : @"已停用";
+        // v2.6: two-line rule cell — the title (app + directory/kind +
+        // scope) on the main line, the filters + state on the second
+        // line, so a long rule still reads clearly instead of running
+        // into one unreadable line.
+        c.text = cl_custom_clean_rule_title(rule);
+        c.textProperties.numberOfLines = 0;
+        NSString *filters = cl_custom_clean_rule_filters_text(rule);
+        NSString *state = [rule[CLCustomRuleEnabledKey] boolValue] ? @"已启用" : @"已停用";
+        c.secondaryText = filters.length ? [NSString stringWithFormat:@"%@ · %@", filters, state] : state;
+        c.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+        c.secondaryTextProperties.numberOfLines = 0;
         UISwitch *sw = [UISwitch new];
         sw.on = [rule[CLCustomRuleEnabledKey] boolValue];
         [sw addTarget:self action:@selector(ruleSwitchChanged:) forControlEvents:UIControlEventValueChanged];
@@ -307,6 +321,23 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
             if (shown.count) [text appendFormat:@"\n\n%@", [shown componentsJoinedByString:@"\n"]];
             if (sample.count > shown.count)
                 [text appendFormat:@"\n…等 %lu 个", (unsigned long)(sample.count - shown.count)];
+            // v2.6: no silent failures — every skipped/failed item is
+            // listed with its reason, so the preview shows exactly what
+            // the run will (and will not) delete.
+            NSArray *skippedPaths = result[@"skippedPaths"];
+            if (skippedPaths.count) {
+                NSArray *shownSkipped = [skippedPaths subarrayWithRange:NSMakeRange(0, MIN(skippedPaths.count, 10))];
+                [text appendFormat:@"\n\n跳过：\n%@", [shownSkipped componentsJoinedByString:@"\n"]];
+                if (skippedPaths.count > shownSkipped.count)
+                    [text appendFormat:@"\n…等 %lu 个", (unsigned long)(skippedPaths.count - shownSkipped.count)];
+            }
+            NSArray *failedPaths = result[@"failedPaths"];
+            if (failedPaths.count) {
+                NSArray *shownFailed = [failedPaths subarrayWithRange:NSMakeRange(0, MIN(failedPaths.count, 10))];
+                [text appendFormat:@"\n\n失败：\n%@", [shownFailed componentsJoinedByString:@"\n"]];
+                if (failedPaths.count > shownFailed.count)
+                    [text appendFormat:@"\n…等 %lu 个", (unsigned long)(failedPaths.count - shownFailed.count)];
+            }
             strongSelf->_statusLabel.text = [NSString stringWithFormat:@"预览：%lu 个文件，%@。",
                                              (unsigned long)matched, cl_size_text(bytes)];
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"预览匹配"
@@ -344,9 +375,25 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
             unsigned long long freed = [result[@"freed"] unsignedLongLongValue];
             NSUInteger failed = [result[@"failed"] unsignedIntegerValue];
             NSUInteger skipped = [result[@"skipped"] unsignedIntegerValue];
-            NSString *text = [NSString stringWithFormat:@"已释放 %@。", cl_size_text(freed)];
-            if (skipped) text = [text stringByAppendingFormat:@"跳过 %lu 个（太新/大小不符）。", (unsigned long)skipped];
-            if (failed) text = [text stringByAppendingFormat:@"%lu 项失败（详见日志）。", (unsigned long)failed];
+            NSMutableString *text = [NSMutableString stringWithString:[NSString stringWithFormat:@"已释放 %@。", cl_size_text(freed)]];
+            if (skipped) [text appendFormat:@"跳过 %lu 个（太新/大小不符）。", (unsigned long)skipped];
+            if (failed) [text appendFormat:@"%lu 项失败。", (unsigned long)failed];
+            // v2.6: the run report lists the skipped/failed items with
+            // their reasons (up to 10 each) instead of "详见日志".
+            NSArray *skippedPaths = result[@"skippedPaths"];
+            if (skippedPaths.count) {
+                NSArray *shownSkipped = [skippedPaths subarrayWithRange:NSMakeRange(0, MIN(skippedPaths.count, 10))];
+                [text appendFormat:@"\n\n跳过：\n%@", [shownSkipped componentsJoinedByString:@"\n"]];
+                if (skippedPaths.count > shownSkipped.count)
+                    [text appendFormat:@"\n…等 %lu 个", (unsigned long)(skippedPaths.count - shownSkipped.count)];
+            }
+            NSArray *failedPaths = result[@"failedPaths"];
+            if (failedPaths.count) {
+                NSArray *shownFailed = [failedPaths subarrayWithRange:NSMakeRange(0, MIN(failedPaths.count, 10))];
+                [text appendFormat:@"\n\n失败：\n%@", [shownFailed componentsJoinedByString:@"\n"]];
+                if (failedPaths.count > shownFailed.count)
+                    [text appendFormat:@"\n…等 %lu 个", (unsigned long)(failedPaths.count - shownFailed.count)];
+            }
             strongSelf->_statusLabel.text = text;
             cl_alert(strongSelf, @"自定义清理完成", text);
         });
@@ -402,8 +449,23 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
     picker.onSaved = ^{
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
+        // v2.6: the new rule slides in instead of the whole list
+        // flashing. (The first rule also changes the section footer —
+        // from the empty-rules text — so that one reloads the section.)
+        NSUInteger before = strongSelf->_rules.count;
         [strongSelf reloadModel];
-        [strongSelf.tableView reloadData];
+        if (before == 0) {
+            [strongSelf.tableView reloadData];
+        } else if (strongSelf->_rules.count == before + 1) {
+            NSIndexPath *ip = [NSIndexPath indexPathForRow:(NSInteger)(strongSelf->_rules.count - 1)
+                                                  inSection:CLCustomSectionRules];
+            [strongSelf.tableView insertRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationAutomatic];
+        } else {
+            // The count did not grow by exactly one (should not happen —
+            // the picker appends one rule) — reload rather than risk a
+            // table inconsistency crash.
+            [strongSelf.tableView reloadData];
+        }
         [strongSelf updateRunButton];
     };
     [self.navigationController pushViewController:picker animated:YES];
@@ -428,8 +490,20 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
     picker.onSaved = ^{
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
+        // v2.6: the edited rule updates in place (same UUID) instead of
+        // the whole list flashing.
         [strongSelf reloadModel];
-        [strongSelf.tableView reloadData];
+        NSUInteger row = NSNotFound;
+        NSString *uuid = rule[CLCustomRuleIDKey];
+        for (NSUInteger i = 0; i < strongSelf->_rules.count; i++) {
+            if ([strongSelf->_rules[i][CLCustomRuleIDKey] isEqualToString:uuid]) { row = i; break; }
+        }
+        if (row != NSNotFound) {
+            NSIndexPath *ip = [NSIndexPath indexPathForRow:(NSInteger)row inSection:CLCustomSectionRules];
+            [strongSelf.tableView reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationFade];
+        } else {
+            [strongSelf.tableView reloadData];
+        }
         [strongSelf updateRunButton];
     };
     [self.navigationController pushViewController:picker animated:YES];
@@ -455,8 +529,24 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
         if (!exists) { [rules addObject:candidate]; added++; }
     }
     cl_custom_clean_save_rules(rules);
+    NSUInteger before = _rules.count;
     [self reloadModel];
-    [self.tableView reloadData];
+    // v2.6: the added preset rules slide in instead of the whole list
+    // flashing. (When the list was empty, the section footer changes too
+    // — from the empty-rules text — so that case reloads the section.)
+    // If the count did not grow by exactly `added` (should not happen),
+    // reload rather than risk a table inconsistency crash.
+    if (added && before == 0) {
+        [self.tableView reloadData];
+    } else if (added && _rules.count == before + added) {
+        NSMutableArray *ips = [NSMutableArray new];
+        for (NSUInteger i = before; i < _rules.count; i++) {
+            [ips addObject:[NSIndexPath indexPathForRow:(NSInteger)i inSection:CLCustomSectionRules]];
+        }
+        [self.tableView insertRowsAtIndexPaths:ips withRowAnimation:UITableViewRowAnimationAutomatic];
+    } else if (added) {
+        [self.tableView reloadData];
+    }
     [self updateRunButton];
     _statusLabel.text = added ? [NSString stringWithFormat:@"已加入 %lu 条规则：%@。", (unsigned long)added, preset[CLCustomPresetTitleKey]]
                               : @"这些规则已经在列表里了。";
@@ -559,10 +649,30 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
             NSUInteger failed = [result[@"failed"] unsignedIntegerValue];
             NSUInteger skipped = [result[@"skipped"] unsignedIntegerValue];
             NSArray *warnings = result[@"warnings"];
-            NSString *text = [NSString stringWithFormat:@"已释放 %@。", cl_size_text(freed)];
-            if (skipped) text = [text stringByAppendingFormat:@"跳过 %lu 个（太新/大小不符）。", (unsigned long)skipped];
-            if (failed) text = [text stringByAppendingFormat:@"%lu 项失败（详见日志）。", (unsigned long)failed];
-            if (warnings.count) text = [text stringByAppendingFormat:@"\n%@", [warnings componentsJoinedByString:@"\n"]];
+            NSMutableString *text = [NSMutableString stringWithString:[NSString stringWithFormat:@"已释放 %@。", cl_size_text(freed)]];
+            if (skipped) [text appendFormat:@"跳过 %lu 个（太新/大小不符）。", (unsigned long)skipped];
+            if (failed) [text appendFormat:@"%lu 项失败。", (unsigned long)failed];
+            if (warnings.count) [text appendFormat:@"\n%@", [warnings componentsJoinedByString:@"\n"]];
+            // v2.6: the run report lists the skipped/failed items with
+            // their reasons (up to 10 each), aggregated across rules.
+            NSMutableArray *allSkipped = [NSMutableArray new];
+            NSMutableArray *allFailed = [NSMutableArray new];
+            for (NSDictionary *entry in result[@"perRule"]) {
+                [allSkipped addObjectsFromArray:entry[@"skippedPaths"] ?: @[]];
+                [allFailed addObjectsFromArray:entry[@"failedPaths"] ?: @[]];
+            }
+            if (allSkipped.count) {
+                NSArray *shownSkipped = [allSkipped subarrayWithRange:NSMakeRange(0, MIN(allSkipped.count, 10))];
+                [text appendFormat:@"\n\n跳过：\n%@", [shownSkipped componentsJoinedByString:@"\n"]];
+                if (allSkipped.count > shownSkipped.count)
+                    [text appendFormat:@"\n…等 %lu 个", (unsigned long)(allSkipped.count - shownSkipped.count)];
+            }
+            if (allFailed.count) {
+                NSArray *shownFailed = [allFailed subarrayWithRange:NSMakeRange(0, MIN(allFailed.count, 10))];
+                [text appendFormat:@"\n\n失败：\n%@", [shownFailed componentsJoinedByString:@"\n"]];
+                if (allFailed.count > shownFailed.count)
+                    [text appendFormat:@"\n…等 %lu 个", (unsigned long)(allFailed.count - shownFailed.count)];
+            }
             strongSelf->_statusLabel.text = text;
             cl_alert(strongSelf, @"自定义清理完成", text);
         });

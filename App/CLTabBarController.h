@@ -6,13 +6,15 @@
 //  No custom capsule view, no solid white background, no manual shadow;
 //  the system renders the floating glass pill and handles safe-area /
 //  content insets, so every page's last row stays reachable.
+//  v2.6: also the tab bar's delegate (crossfade on tab select, except
+//  the cleaner tab — its clean animation must not be disturbed).
 //
 
 #import <UIKit/UIKit.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface CLTabBarController : UITabBarController
+@interface CLTabBarController : UITabBarController <UITabBarControllerDelegate>
 
 // iPhone Shortcuts (v2.3, URL scheme cleaner://): cleaner://clean jumps to
 // the clean page and starts a clean (with the usual confirm dialog);

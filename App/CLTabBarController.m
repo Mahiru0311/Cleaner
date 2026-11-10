@@ -22,6 +22,7 @@
 {
     [super viewDidLoad];
     self.tabBar.tintColor = UIColor.systemBlueColor;
+    self.delegate = self;
 
     CLHomeViewController *home = [CLHomeViewController new];
     __weak typeof(self) weakSelf = self;
@@ -47,6 +48,24 @@
                                                            image:[UIImage systemImageNamed:@"gearshape.fill"]
                                                              tag:3];
     self.viewControllers = @[homeNav, cleanNav, appsNav, settingsNav];
+}
+
+// v2.6: tab switches crossfade the incoming page (system animation
+// only) instead of snapping — but only when the tab bar is actually on
+// screen. The cleaner tab is excluded: its clean animation is the
+// user's favourite and must not be disturbed by a competing fade.
+- (void)tabBarController:(UITabBarController *)tabBarController
+ didSelectViewController:(UIViewController *)viewController
+{
+    if (!self.view.window) return;
+    if ([viewController isKindOfClass:UINavigationController.class]) {
+        UIViewController *root = ((UINavigationController *)viewController).viewControllers.firstObject;
+        if ([root isKindOfClass:CLCleanerViewController.class]) return;
+    }
+    [UIView transitionWithView:viewController.view duration:0.18
+                       options:UIViewAnimationOptionTransitionCrossDissolve
+                    animations:^{}
+                    completion:nil];
 }
 
 // cleaner://clean and cleaner://scan (v2.3). The URL's host is the action;

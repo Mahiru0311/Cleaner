@@ -450,6 +450,122 @@ int main(void)
             cl_custom_clean_save_rules(@[]);
             check(cl_custom_clean_rules().count == 0, @"deleted rule is gone after reload");
 
+            // --- v2.6 rules rigor: exact extension matching, name case
+            // rules, preview == run, skipped/failed paths with reasons,
+            // rule title/filters split. ---
+            NSString *container5 = [base stringByAppendingPathComponent:@"App-UUID-5"];
+            mkdirs([container5 stringByAppendingPathComponent:@"Library/Caches"]);
+            put([container5 stringByAppendingPathComponent:@"Library/Caches/a.mp4"], @"12345");
+            put([container5 stringByAppendingPathComponent:@"Library/Caches/b.mp4.bak"], @"12345");
+            put([container5 stringByAppendingPathComponent:@"Library/Caches/xmp4"], @"12345");
+            put([container5 stringByAppendingPathComponent:@"Library/Caches/.mp4"], @"12345");
+            put([container5 stringByAppendingPathComponent:@"Library/Caches/c.MP4"], @"12345");
+            put([container5 stringByAppendingPathComponent:@"Library/Caches/myThumb.jpg"], @"12345");
+            put([container5 stringByAppendingPathComponent:@"Library/Caches/thumb2.jpg"], @"12345");
+            put([container5 stringByAppendingPathComponent:@"Library/Caches/photo.jpg"], @"12345");
+            // Exact extension matching: only a.mp4 and c.MP4 match ".mp4".
+            // b.mp4.bak has no .mp4 suffix, xmp4 has no dot, a bare ".mp4"
+            // dotfile is not an mp4 file; c.MP4 matches case-insensitively.
+            // Non-matching files are not matched — and not "skipped"
+            // either (skipped means "matched the pattern, excluded by a
+            // filter", and is listed with its reason).
+            CLCleanMatchOptions extOpts = { .dryRun = YES };
+            CLCleanMatchResult extDry;
+            check(cl_clean_matching_files_filtered(container5, @[@".mp4"], nil, nil, &extOpts, &extDry, NULL) &&
+                  extDry.matched == 2 && extDry.matchedBytes == 10 && extDry.skipped == 0 && extDry.failed == 0,
+                  @"extension exactness: a.mp4 + c.MP4 match, .mp4.bak/xmp4/bare .mp4 do not");
+            check([extDry.samplePaths containsObject:@"Library/Caches/a.mp4"] &&
+                  [extDry.samplePaths containsObject:@"Library/Caches/c.MP4"] &&
+                  ![extDry.samplePaths containsObject:@"Library/Caches/b.mp4.bak"] &&
+                  ![extDry.samplePaths containsObject:@"Library/Caches/.mp4"],
+                  @"extension sample is exactly the two real mp4 files");
+            // Name-substring matching is case-insensitive ("THUMB" matches
+            // "myThumb.jpg"), documented in CLCache.h.
+            CLCleanMatchOptions nameOpts = { .dryRun = YES };
+            CLCleanMatchResult nameDry;
+            check(cl_clean_matching_files_filtered(container5, nil, @[@"THUMB"], nil, &nameOpts, &nameDry, NULL) &&
+                  nameDry.matched == 2 && nameDry.matchedBytes == 10 && nameDry.skipped == 0,
+                  @"name substring is case-insensitive: THUMB matches myThumb.jpg + thumb2.jpg");
+            // A matched file that fails the age filter is skipped WITH its
+            // reason listed ("· 太新"), not silently dropped.
+            CLCleanMatchOptions ageSkipOpts = { .minAgeSeconds = 30 * 86400.0, .dryRun = YES };
+            CLCleanMatchResult ageSkip;
+            check(cl_clean_matching_files_filtered(container5, @[@".mp4"], nil, nil, &ageSkipOpts, &ageSkip, NULL) &&
+                  ageSkip.matched == 0 && ageSkip.skipped == 2 && ageSkip.skippedPaths.count == 2,
+                  @"age filter skips both new mp4s and lists them");
+            check([ageSkip.skippedPaths[0] containsString:@" · 太新"] &&
+                  [ageSkip.skippedPaths[1] containsString:@" · 太新"],
+                  @"skipped paths carry their reason (· 太新)");
+            // A file that cannot be deleted is failed WITH its reason
+            // listed ("· 删除失败"). The containing directory is chmod
+            // 0555, so unlink fails with EACCES — this assumes a
+            // non-root runner (GitHub Actions macOS runners run as user
+            // "runner", not root).
+            NSString *locked = [container5 stringByAppendingPathComponent:@"Library/Caches/locked"];
+            mkdirs(locked);
+            put([locked stringByAppendingPathComponent:@"locked.mp4"], @"12345");
+            check([fm setAttributes:@{ NSFilePosixPermissions: @0555 } ofItemAtPath:locked error:nil],
+                  @"lock the directory (0555) so unlink fails");
+            CLCleanMatchOptions lockedOpts = { .dryRun = NO };
+            CLCleanMatchResult lockedRun;
+            check(cl_clean_matching_files_filtered(container5, @[@".mp4"], nil, nil, &lockedOpts, &lockedRun, NULL) &&
+                  lockedRun.failed == 1 && lockedRun.failedPaths.count == 1,
+                  @"unlink failure is counted and listed, not silent");
+            check([lockedRun.failedPaths[0] containsString:@"locked.mp4"] &&
+                  [lockedRun.failedPaths[0] containsString:@" · 删除失败"],
+                  @"failed path carries its reason (· 删除失败)");
+            check(has([locked stringByAppendingPathComponent:@"locked.mp4"]),
+                  @"the undeletable file is still there");
+            check([fm setAttributes:@{ NSFilePosixPermissions: @0755 } ofItemAtPath:locked error:nil],
+                  @"unlock the directory again for cleanup");
+            // Preview set == actual delete set, through the real API: the
+            // dry-run sample (what the preview shows) is exactly the set
+            // the run deletes, and the freed bytes equal the preview bytes.
+            // Fixture is under 50 files, so the sample IS the full set.
+            NSString *container6 = [base stringByAppendingPathComponent:@"App-UUID-6"];
+            mkdirs([container6 stringByAppendingPathComponent:@"Library/Caches"]);
+            put([container6 stringByAppendingPathComponent:@"Library/Caches/a.mp4"], @"12345");
+            put([container6 stringByAppendingPathComponent:@"Library/Caches/b.mp4"], @"1234567");
+            put([container6 stringByAppendingPathComponent:@"Library/Caches/c.mp4"], @"123");
+            CLCacheItem *item6 = [CLCacheItem new];
+            item6.bundleID = @"com.example.six"; item6.name = @"Test6"; item6.containerPath = container6;
+            NSDictionary *rule6 = cl_custom_clean_make_rule_full(@"*", @"extension", @".mp4", nil, nil, nil, nil);
+            __block NSDictionary *dry6 = nil;
+            cl_custom_clean_dry_run(@[item6], rule6, nil, ^(NSDictionary *result) {
+                dry6 = result; dispatch_semaphore_signal(sem);
+            });
+            dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            check([dry6[@"matched"] unsignedIntegerValue] == 3 &&
+                  [dry6[@"bytes"] unsignedLongLongValue] == 15,
+                  @"v2.6 preview math: 3 files, 15 bytes");
+            __block NSDictionary *run6 = nil;
+            cl_custom_clean_run_one_rule(@[item6], rule6, nil, ^(NSDictionary *result) {
+                run6 = result; dispatch_semaphore_signal(sem);
+            });
+            dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            check([run6[@"freed"] unsignedLongLongValue] == 15 &&
+                  [run6[@"failed"] unsignedIntegerValue] == 0,
+                  @"v2.6 run frees exactly the preview bytes");
+            check([[NSSet setWithArray:dry6[@"sample"]] isEqualToSet:[NSSet setWithArray:run6[@"sample"]]],
+                  @"preview sample set == actual delete set (no silent scope creep)");
+            check([run6[@"sample"] count] == 3,
+                  @"the run records the same 3 files it deleted");
+            // Rule title/filters split (two-line rule cell): the title is
+            // the rule itself, the filters line is the conditions only.
+            NSString *title = cl_custom_clean_rule_title(dFilt);
+            NSString *filters = cl_custom_clean_rule_filters_text(dFilt);
+            check([title containsString:@"Library/Caches/videos"] &&
+                  [title containsString:@"按条件"] && ![title containsString:@"扩展"],
+                  @"rule title: app + directory + scope, no filters in it");
+            check([filters isEqualToString:@"扩展 .mp4"],
+                  @"rule filters line: the conditions only");
+            check([[cl_custom_clean_rule_summary(dFilt) componentsSeparatedByString:@" · "] count] >= 3 &&
+                  [cl_custom_clean_rule_summary(dFilt) hasPrefix:title],
+                  @"rule summary is still title + filters");
+            check(cl_custom_clean_rule_filters_text(dAll) == nil &&
+                  [cl_custom_clean_rule_summary(dAll) isEqualToString:cl_custom_clean_rule_title(dAll)],
+                  @"a rule with no filters has no filters line");
+
             // --- App count after clean-all (v2.3 regression): the store
             // keeps the measured total even when every row is ~0 bytes. ---
             CLCacheItem *app1 = [CLCacheItem new];

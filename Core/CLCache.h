@@ -64,8 +64,17 @@ BOOL cl_clean_matching_files(NSString *container, NSArray<NSString *> *_Nullable
 // dry-run preview (count + sample, delete nothing) and cancellation.
 // The result reports per-item accounting: freed / failed / skipped
 // (pattern-matched but filtered out) / matched / matchedBytes, plus up to
-// 50 matched relative paths for the preview. The container identity is
-// re-checked before every delete; if it changes mid-walk the walk stops.
+// 50 matched relative paths for the preview, and up to 50 failed and
+// skipped relative paths each, so no failure or skip is silent (v2.6).
+// Matching rules (v2.6, exact — the preview set must equal the delete
+// set): an extension matches only the file's real extension — the name
+// must be LONGER than the extension (a bare ".mp4" dotfile does not
+// match) and end with it, so ".mp4" never matches ".mp4.bak" or "xmp4";
+// extension and name-substring matching are both case-insensitive (both
+// sides lowercased). Preview and execution run the SAME walk with the
+// same matcher; the only difference is dryRun (count vs unlink).
+// The container identity is re-checked before every delete; if it
+// changes mid-walk the walk stops.
 typedef struct {
     NSTimeInterval minAgeSeconds;
     unsigned long long minSize;
@@ -90,6 +99,11 @@ typedef struct {
     NSUInteger matched;
     unsigned long long matchedBytes;
     NSArray<NSString *> *_Nullable samplePaths;
+    // v2.6: every failed / skipped file, listed with its reason
+    // ("rel/path · 删除失败", "rel/path · 太新", "rel/path · 太小/太大"),
+    // capped at 50 each — a failed or skipped file is never silent.
+    NSArray<NSString *> *_Nullable failedPaths;
+    NSArray<NSString *> *_Nullable skippedPaths;
     BOOL limited;
 } CLCleanMatchResult;
 

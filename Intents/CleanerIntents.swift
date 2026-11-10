@@ -18,6 +18,36 @@
 //  same one v2/v2.3 already proved on-device, and the intent shares the
 //  app's 24 h measurement cache and custom-rules plist for free.
 //
+//  HEADLESS SELF-CONTAINMENT (v2.6, verified by reading the code — the
+//  on-device proof is the diagnostics below): CLBackgroundCleanRun
+//  touches nothing that needs a scene or a UI. The grant is obtained
+//  in-process (container_query via the App Group entitlement, same call
+//  the UI clean uses); the measurement cache and the custom-rules plist
+//  live in the app's own Caches directory, which is the same directory
+//  in a headless launch (same app, same container); the scan, the purge
+//  and the rules all run on background queues; main() only calls
+//  keepAlive, sets the container resolvers and starts UIApplicationMain
+//  — the scene delegate (and its URL handling) never runs without a
+//  scene. What headless launch DOES need: the App Group entitlement
+//  intact (re-signing must keep it) and the app NOT force-quit — see
+//  below. It does NOT need the app open, in the background, or ever
+//  launched before in this boot beyond the one first launch that lets
+//  the system index the shortcut.
+//
+//  FORCE-QUIT CAVEAT (v2.6, honest platform limit, also stated in the
+//  guide): if the user force-quits Cleaner (swipes it away in the app
+//  switcher), iOS will not relaunch it in the background until it is
+//  opened again — a force-quit is the user telling the system to leave
+//  the app alone. Normal suspended background is fine and needs no
+//  action. If a shortcut tap does nothing at all, check this first.
+//
+//  DIAGNOSTICS (v2.6): every run is recorded in the App Group
+//  (cl_intent_last_run, Core/CLBackgroundClean.m) with the time, freed
+//  bytes, apps cleaned/remaining, partial/timeout, and whether the run
+//  was headless (no connected scene) or the app was already alive. The
+//  Settings guide shows the last run, so the next "it opened the app"
+//  report can be told apart from "the intent ran headless".
+//
 //  Execution budget: a Shortcuts intent with openAppWhenRun = false has
 //  roughly a 30 s budget (the headless-app background-task cap), so the
 //  clean stops starting new apps after 25 s and reports partial progress
@@ -39,6 +69,7 @@
 
 import AppIntents
 import Foundation
+import UIKit
 
 struct CleanCacheIntent: AppIntent {
     static var title: LocalizedStringResource = "清理全部缓存"
@@ -46,6 +77,10 @@ struct CleanCacheIntent: AppIntent {
     static var openAppWhenRun: Bool = false
 
     func perform() async throws -> some IntentResult {
+        // Headless means: no scene is connected — the app was not open
+        // (and not even alive in the background) when the shortcut ran.
+        // A suspended app still has its scene, so this is false then.
+        let headless = await MainActor.run { UIApplication.shared.connectedScenes.isEmpty }
         // The clean does filesystem work synchronously — run it off the
         // intent's thread on a background queue.
         let result: [String: Any] = await withCheckedContinuation { continuation in
@@ -63,6 +98,20 @@ struct CleanCacheIntent: AppIntent {
         let failed = (result["failed"] as? NSNumber)?.intValue ?? 0
         let partial = (result["partial"] as? NSNumber)?.boolValue ?? false
         let error = result["error"] as? String
+        // Record the run in the App Group before answering, so the
+        // Settings guide can show what actually happened (including the
+        // error case — a failed run is still a run).
+        var record: [String: Any] = [
+            "freed": totalFreed, "customFreed": customFreed,
+            "appsCleaned": appsCleaned, "appsRemaining": appsRemaining,
+            "appsTotal": appsTotal, "failed": failed,
+            "partial": partial,
+            "timedOut": (result["timedOut"] as? NSNumber)?.boolValue ?? false,
+            "duration": (result["duration"] as? NSNumber)?.doubleValue ?? 0,
+            "headless": headless,
+        ]
+        if let error = error { record["error"] = error }
+        cl_intent_record_run(record as NSDictionary)
         let sizeText = ByteCountFormatter.string(fromByteCount: Int64(totalFreed), countStyle: .file)
         if let error = error {
             return .result(dialog: "清理失败：\(error)")

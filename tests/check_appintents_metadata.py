@@ -104,26 +104,36 @@ def main(argv):
         if TITLE not in subtree_text(intent):
             errors.append(f"{INTENT}: title {TITLE!r} not found")
 
-    # The CleanerShortcuts auto-shortcuts: any section whose key names
-    # shortcuts, whose subtree names the provider and carries both
-    # phrases. The phrases may carry the literal app name or the
-    # \(.applicationName) placeholder — both contain the two substrings
-    # below, so the check accepts either form.
+    # The CleanerShortcuts auto-shortcuts (real format, run 42865854957):
+    # the provider is named once, at the top level, as the MANGLED
+    # autoShortcutProviderMangledName ("14CleanerIntents0A9ShortcutsV" —
+    # the literal "CleanerShortcuts" never appears, same word substitution
+    # as the binary's mangled symbols); each autoShortcuts entry carries
+    # phraseTemplates[].key ("用 ${applicationName} 清理全部缓存",
+    # "在 ${applicationName} 里清理缓存") and shortTitle.key
+    # ("清理全部缓存"). The phrases may carry the literal app name or
+    # the ${applicationName} placeholder — both contain the two
+    # substrings below, so the check accepts either form.
     shortcut_sections = []
     for node in walk(data):
         if isinstance(node, dict):
             for key, value in node.items():
                 if "shortcut" in str(key).lower():
                     shortcut_sections.append(value)
-    shortcut_ok = False
+    whole = subtree_text(data)
+    provider_ok = PROVIDER in whole or "0A9ShortcutsV" in whole
+    auto_text = ""
     for section in shortcut_sections:
-        text = subtree_text(section)
-        if PROVIDER in text and all(phrase in text for phrase in PHRASES):
-            shortcut_ok = True
-            break
-    if not shortcut_ok:
+        auto_text += "\n" + subtree_text(section)
+    phrases_ok = all(phrase in auto_text for phrase in PHRASES)
+    if not provider_ok:
         errors.append(
-            f"no autoShortcuts section naming {PROVIDER} with both phrases "
+            f"no autoShortcut provider naming {PROVIDER} "
+            f"(mangled 0A9ShortcutsV) in extract.actionsdata"
+        )
+    if not phrases_ok:
+        errors.append(
+            f"no autoShortcuts phraseTemplates with both phrases "
             f"({PHRASES[0]!r} / {PHRASES[1]!r})"
         )
 

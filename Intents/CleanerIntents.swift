@@ -31,8 +31,10 @@
 //  scene. What headless launch DOES need: the App Group entitlement
 //  intact (re-signing must keep it) and the app NOT force-quit — see
 //  below. It does NOT need the app open, in the background, or ever
-//  launched before in this boot beyond the one first launch that lets
-//  the system index the shortcut.
+//  launched before in this boot beyond the one first launch (v2.7: the
+//  system reads the build-time Metadata.appintents when the app is
+//  installed; opening the app does not index anything — the first
+//  launch just confirms the app runs).
 //
 //  FORCE-QUIT CAVEAT (v2.6, honest platform limit, also stated in the
 //  guide): if the user force-quits Cleaner (swipes it away in the app
@@ -145,9 +147,10 @@ struct CleanerShortcuts: AppShortcutsProvider {
     }
 }
 
-// Keeps the intent types linked: called once from main.m. The system
-// discovers intents by scanning the binary, and no app code references
-// them — without this, -dead_strip could drop them.
+// Keeps the intent types linked: called once from main.m. iOS discovers
+// intents from the build-time Metadata.appintents file (see build.sh),
+// not by scanning the binary — but the metadata can only name types
+// that survive the link, so without this, -dead_strip could drop them.
 @objc(CLIntentsBootstrap)
 public final class CLIntentsBootstrap: NSObject {
     @objc public static func keepAlive() {

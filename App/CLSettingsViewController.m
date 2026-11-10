@@ -106,7 +106,10 @@
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    if (section == 1) return @"点一下就在后台清理，不打开应用：先装 0.2.6、打开一次 Cleaner，系统索引之后在「快捷指令」里搜 Cleaner 就会出现「清理全部缓存」。点进「快捷指令」看状态、步骤和上次运行记录。";
+    if (section == 1) {
+        NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"?";
+        return [NSString stringWithFormat:@"点一下就在后台清理，不打开应用：装好 %@ 后打开一次 Cleaner，再去「快捷指令」里搜 Cleaner 就会出现「清理全部缓存」。从旧版升级要先把 Cleaner 整个删掉再装，直接覆盖装可能搜不到。点进「快捷指令」看状态、步骤和上次运行记录。", version];
+    }
     if (section == 2) return @"图标风格参考 huamidev/GestaltX（GPL-3.0）；fd 遍历与清理记账参考 YangJiiii/3105（GPL-3.0）。Cleaner 是 GPL-3.0-or-later 开源软件。";
     return nil;
 }

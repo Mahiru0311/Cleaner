@@ -20,13 +20,20 @@ if [ "$1" = "--sdk" ] && [ "$3" = "--show-sdk-path" ]; then
 fi
 if [ "$1" = "--sdk" ] && [ "$3" = "swiftc" ]; then
     output=
+    constvals=
     previous=
     for argument in "$@"; do
         if [ "$previous" = "-o" ]; then output=$argument; fi
+        if [ "$previous" = "-emit-const-values-path" ]; then constvals=$argument; fi
         previous=$argument
     done
     test -n "$output"
     printf 'fake swift object\n' > "$output"
+    # v2.7: build.sh passes -emit-const-values-path; the fake writes the
+    # const-values file so the (fake) processor has its input.
+    if [ -n "$constvals" ]; then
+        printf '{}\n' > "$constvals"
+    fi
     exit 0
 fi
 if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then
@@ -56,6 +63,12 @@ if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then
             printf '# %s\n' '$s14CleanerIntents16CleanCacheIntentV'
             printf '# %s\n' '$s14CleanerIntents0A9ShortcutsV'
             printf '# %s\n' '0A9ShortcutsV03appC0'
+            # v2.7: the fallback module "Cleaner" (same substitution: the
+            # first word "Cleaner" becomes 0A). The fake must carry both
+            # modules' symbols, or the fallback path's pre-strip check
+            # would fail in the fake environment for the wrong reason.
+            printf '# %s\n' '$s7Cleaner16CleanCacheIntentV'
+            printf '# %s\n' '$s7Cleaner0A9ShortcutsV'
             printf '# AppIntents linked\n'
             printf '\nexit 0\n'
         } > "$output"
@@ -65,6 +78,32 @@ if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then
 fi
 if [ "$1" = "--sdk" ] && [ "$3" = "strip" ]; then
     # build.sh strips the linked binary; the fixture binary is already a stub.
+    exit 0
+fi
+if [ "$1" = "appintentsmetadataprocessor" ]; then
+    output=
+    previous=
+    for argument in "$@"; do
+        if [ "$previous" = "--output" ]; then output=$argument; fi
+        previous=$argument
+    done
+    test -n "$output"
+    if [ "${FAKE_DROP_METADATA:-0}" = 1 ]; then
+        # v2.7: the processor found no App Intents symbols and wrote
+        # nothing ("Extracted no relevant App Intents symbols, skipping
+        # writing output") — the build must fail instead of shipping an
+        # invisible shortcut.
+        echo 'Extracted no relevant App Intents symbols, skipping writing output' >&2
+        exit 0
+    fi
+    mkdir -p "$output"
+    # Plausible extracted metadata: the CleanCacheIntent action
+    # (discoverable, background) and the CleanerShortcuts auto-shortcuts
+    # with both phrases, in the shape the validator checks.
+    cat > "$output/extract.actionsdata" <<'METADATA_EOF'
+{"actions": [{"identifier": "CleanCacheIntent", "isDiscoverable": true, "openAppWhenRun": false, "title": "清理全部缓存"}], "autoShortcuts": [{"provider": "CleanerShortcuts", "phrases": ["用 Cleaner 清理全部缓存", "在 Cleaner 里清理缓存"]}]}
+METADATA_EOF
+    printf '{"version": 1}\n' > "$output/version.json"
     exit 0
 fi
 exit 2
@@ -163,6 +202,14 @@ class StagedBuildTests(unittest.TestCase):
             project.mkdir()
             for name in ("build.sh", "Info.plist", "entitlements.plist"):
                 shutil.copy2(ROOT / name, project / name)
+            # v2.7: build.sh now reads the metadata validator and the
+            # const-gather protocols file from the project tree.
+            (project / "tests").mkdir()
+            shutil.copy2(ROOT / "tests" / "check_appintents_metadata.py",
+                         project / "tests" / "check_appintents_metadata.py")
+            (project / "Intents").mkdir()
+            shutil.copy2(ROOT / "Intents" / "swift_const_gather_protocols.json",
+                         project / "Intents" / "swift_const_gather_protocols.json")
             (project / "icons").mkdir()
             (project / "icons" / "AppIcon60x60@2x.png").write_bytes(b"fixture icon")
             environment = self._fake_environment(root)
@@ -247,6 +294,29 @@ class StagedBuildTests(unittest.TestCase):
             environment = self._fake_environment(root)
             environment["CLEANER_FINAL_IPA"] = str(final)
             environment["FAKE_DROP_INTENT"] = "1"
+            result = subprocess.run(
+                [str(BUILD)], cwd=ROOT, env=environment,
+                text=True, capture_output=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(final.read_bytes(), original)
+
+
+    def test_dropped_app_intents_metadata_fails_the_build(self):
+        # v2.7: the processor found no App Intents symbols and wrote no
+        # Metadata.appintents (the v2.4-v2.6 outcome, which shipped an
+        # invisible shortcut). The build must fail — including through
+        # the fallback recompile as the app module — and leave the
+        # existing release untouched.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            final = root / "release" / "Cleaner.ipa"
+            final.parent.mkdir()
+            original = b"previous release bytes"
+            final.write_bytes(original)
+            environment = self._fake_environment(root)
+            environment["CLEANER_FINAL_IPA"] = str(final)
+            environment["FAKE_DROP_METADATA"] = "1"
             result = subprocess.run(
                 [str(BUILD)], cwd=ROOT, env=environment,
                 text=True, capture_output=True, check=False,

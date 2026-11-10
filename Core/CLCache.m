@@ -1024,6 +1024,50 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
     return item;
 }
 
+// Every app container under Data/Application, from the filesystem —
+// independent of the scan store, so the rule picker lists apps that
+// were never scanned (v2.7: adding a rule used to cover only what the
+// scanner found, so an app that was never scanned could not get a rule
+// at all). Uses the same cached inode enumeration as the scan
+// (cl_enumerate, shared 10-minute cache) and the same labeling as the
+// scan rows (cl_container_label for the bundle id, cl_display_name for
+// the name), then dedupes by bundle id — one app can own several
+// containers under Data/Application (v2.4 counted containers and showed
+// 267 for 114 apps). Our own container is skipped, like the Apps page.
+// Runs on the caller's queue (off the main thread — cl_load_display_names
+// blocks); progress is the enumerate progress. Returns lightweight
+// CLCacheItems (name, bundleID, containerPath only — no cache
+// measurement) or nil when the enumeration fails or is cancelled.
+NSArray<CLCacheItem *> *_Nullable cl_all_app_containers(
+    CLScanCancellation *_Nullable cancellation,
+    void (^_Nullable progress)(int64_t done, int64_t total, NSUInteger found))
+{
+    NSArray<NSString *> *containers = cl_enumerate(
+        @"/private/var/mobile/Containers/Data/Application", 0, cancellation, progress);
+    if (!containers) return nil;
+    if (!cl_display_names_loaded()) cl_load_display_names();
+    NSString *home = [NSHomeDirectory() stringByResolvingSymlinksInPath];
+    NSMutableArray<CLCacheItem *> *apps = [NSMutableArray new];
+    NSMutableSet<NSString *> *seen = [NSMutableSet new];
+    for (NSString *c in containers) {
+        if (cancellation.isCancelled) return nil;
+        if ([[c stringByResolvingSymlinksInPath] isEqualToString:home]) continue;
+        NSString *bid = cl_container_label(c);
+        if (!bid.length) continue;
+        if ([seen containsObject:bid]) continue;
+        [seen addObject:bid];
+        CLCacheItem *item = [CLCacheItem new];
+        item.bundleID = bid;
+        item.name = cl_display_name(bid) ?: bid;
+        item.containerPath = c;
+        [apps addObject:item];
+    }
+    [apps sortUsingComparator:^NSComparisonResult(CLCacheItem *a, CLCacheItem *b) {
+        return [a.name localizedStandardCompare:b.name];
+    }];
+    return apps;
+}
+
 - (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
               itemsUpdate:(void (^_Nullable)(NSArray<CLCacheItem *> *newItems))itemsUpdate
                completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled, NSUInteger totalApps))completion

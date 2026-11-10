@@ -148,7 +148,8 @@ NSArray<NSString *> *cl_custom_clean_parse_extensions(NSString *csv)
 
 // Resolve a pasted/typed directory path to an app + container-relative
 // path. An absolute path (the directory view's "复制路径" copies one) is
-// matched against the scanned apps' containers; a relative path is
+// matched against the given apps' containers (v2.7: the picker passes
+// the full container list, not just the scanned apps); a relative path is
 // resolved under the given app. The container root itself ("", ".", or the
 // container path) is refused — a rule must target a subdirectory.
 BOOL cl_custom_clean_resolve_pasted_path(NSString *path, NSArray<CLCacheItem *> *apps,
@@ -176,7 +177,7 @@ BOOL cl_custom_clean_resolve_pasted_path(NSString *path, NSArray<CLCacheItem *> 
             }
         }
         if (!best) {
-            if (reason) *reason = @"这条路径不属于任何已扫描应用的容器（请先去清理页扫描一次）";
+            if (reason) *reason = @"这条路径不属于任何应用的容器";
             return NO;
         }
         NSString *container = [best.containerPath stringByStandardizingPath];

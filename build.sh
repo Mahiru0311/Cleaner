@@ -57,6 +57,13 @@ trap cleanup EXIT
 APP="$OUT/Payload/Cleaner.app"
 mkdir -p "$APP"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+XCODE_VERSION=$(xcodebuild -version | awk '/^Xcode /{print $2; exit}') || \
+    fail "cannot determine the Xcode version (xcodebuild -version)"
+[[ -n "$XCODE_VERSION" ]] || fail "cannot determine the Xcode version (xcodebuild -version)"
+# App Intents metadata input lists (v2.7): the processor takes the source
+# files and the Swift const-values files as lists, one path per line.
+printf '%s\n' "$ROOT/Intents/CleanerIntents.swift" > "$OUT/intent-sources.txt"
+printf '%s\n' "$OUT/CleanerIntents.swiftconstvalues" > "$OUT/intent-const-vals.txt"
 # App Intent (v2.4): CleanerIntents.swift is compiled first — it emits the
 # generated ObjC header (CleanerIntents-Swift.h, imported by App/main.m
 # for the keepAlive call) and the object file linked into the app below.
@@ -95,11 +102,38 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 # re-verifying the mangled symbols in the built binary. If the IPA grows
 # past the 250KB target, revisit — but a shortcut the Shortcuts app
 # cannot see is worse than a few KB.
-xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -Onone -swift-version 5 \
-    -parse-as-library -module-name CleanerIntents \
-    -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
-    -emit-objc-header-path "$OUT/CleanerIntents-Swift.h" \
-    -I Core -c Intents/CleanerIntents.swift -o "$OUT/CleanerIntents.o"
+# v2.7 — Metadata.appintents (the actual fix for the missing shortcut):
+# v2.4–v2.6 shipped NO Metadata.appintents: the types were in the binary
+# all along (__swift5_types + __swift5_proto verified on the shipped
+# IPAs), but build.sh never ran the extraction Xcode does automatically,
+# so iOS had nothing to read and the shortcut never appeared. The
+# extraction needs the Swift const-values output: swiftc gets
+# -emit-const-values + -emit-const-values-path (the .swiftconstvalues
+# file) + -const-gather-protocols-file (Intents/swift_const_gather_protocols.json,
+# the AppIntents protocols to gather), and after linking, BEFORE signing,
+# appintentsmetadataprocessor turns them into .app/Metadata.appintents/
+# (extract.actionsdata + version.json). The one unknown is whether the
+# processor accepts the separate CleanerIntents module — if it extracts
+# nothing, build_app_binary recompiles the file as the app's own module
+# ("Cleaner") and the extraction is retried. The package is validated
+# by tests/check_appintents_metadata.py, which inspects the file iOS
+# reads (not a proxy): present-but-empty fails the build.
+# Compiles the intent Swift file as module $1, links the app binary, and
+# runs the pre-strip mangled-symbol check for that module. The module
+# name is a parameter because of the v2.7 fallback below: if the
+# metadata processor finds no App Intents symbols in the separate
+# CleanerIntents module, the file is recompiled as the app's own module
+# ("Cleaner") and the extraction is retried.
+build_app_binary() {
+    local module=$1
+    xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -Onone -swift-version 5 \
+        -parse-as-library -module-name "$module" \
+        -emit-const-values \
+        -Xfrontend -emit-const-values-path "$OUT/CleanerIntents.swiftconstvalues" \
+        -Xfrontend -const-gather-protocols-file "$ROOT/Intents/swift_const_gather_protocols.json" \
+        -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
+        -emit-objc-header-path "$OUT/CleanerIntents-Swift.h" \
+        -I Core -c "$ROOT/Intents/CleanerIntents.swift" -o "$OUT/CleanerIntents.o"
 xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/ModuleCache" -arch arm64 \
     -miphoneos-version-min="$MINIMUM_IOS_VERSION" \
     -isysroot "$SDK" -I Core -I App -I "$OUT" -Wall -Wextra -Werror -Os \
@@ -133,12 +167,56 @@ xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/Modul
 # appShortcuts accessor, AppShortcutsProvider witnesses). "CleanCacheIntent"
 # is spelled out in full (16 chars) because "Clean" is not the word
 # "Cleaner", so no substitution applies to it.
-grep -aE -q '[$]s14CleanerIntents16CleanCacheIntentV' "$APP/Cleaner" || \
-    fail "linked binary is missing the CleanCacheIntent type (no mangled symbol)"
-grep -aE -q '[$]s14CleanerIntents0A9ShortcutsV' "$APP/Cleaner" || \
-    fail "linked binary is missing the CleanerShortcuts provider (no mangled symbol)"
-grep -a -q '0A9ShortcutsV03appC0' "$APP/Cleaner" || \
-    fail "linked binary has no appShortcuts witness"
+    # For the fallback module "Cleaner" (v2.7) the same substitution
+    # applies: $s7Cleaner0A9ShortcutsV and the same 0A9ShortcutsV03appC0
+    # witness ("Cleaner" is still the first word, so it still becomes 0A).
+    local prefix
+    if [[ "$module" == "CleanerIntents" ]]; then
+        prefix='[$]s14CleanerIntents'
+    else
+        prefix='[$]s7Cleaner'
+    fi
+    grep -aE -q "${prefix}16CleanCacheIntentV" "$APP/Cleaner" || \
+        fail "linked binary is missing the CleanCacheIntent type (no mangled symbol)"
+    grep -aE -q "${prefix}0A9ShortcutsV" "$APP/Cleaner" || \
+        fail "linked binary is missing the CleanerShortcuts provider (no mangled symbol)"
+    grep -a -q '0A9ShortcutsV03appC0' "$APP/Cleaner" || \
+        fail "linked binary has no appShortcuts witness"
+}
+
+# Extracts the App Intents metadata for module $1 into
+# $APP/Metadata.appintents and validates it (tests/check_appintents_metadata.py).
+# Returns non-zero when the processor fails or the package is missing,
+# empty or invalid — including when the processor prints "Extracted no
+# relevant App Intents symbols, skipping writing output" and exits 0.
+extract_app_intents() {
+    local module=$1
+    rm -rf -- "$APP/Metadata.appintents"
+    xcrun appintentsmetadataprocessor \
+        --module-name "$module" \
+        --bundle-identifier "$EXPECTED_BUNDLE_ID" \
+        --sdk-root "$SDK" \
+        --platform-family iOS \
+        --deployment-target "$MINIMUM_IOS_VERSION" \
+        --target-triple arm64-apple-ios26.0 \
+        --xcode-version "$XCODE_VERSION" \
+        --binary-file "$OUT/CleanerIntents.o" \
+        --source-file-list "$OUT/intent-sources.txt" \
+        --swift-const-vals-list "$OUT/intent-const-vals.txt" \
+        --output "$APP/Metadata.appintents" \
+        --compile-time-extraction \
+        --deployment-aware-processing \
+        --validate-assistant-intents || return 1
+    python3 "$ROOT/tests/check_appintents_metadata.py" "$APP/Metadata.appintents"
+}
+
+build_app_binary CleanerIntents
+if ! extract_app_intents CleanerIntents; then
+    echo "app intents metadata extraction found nothing for module CleanerIntents — retrying as the app's own module Cleaner" >&2
+    build_app_binary Cleaner
+    extract_app_intents Cleaner || \
+        fail "app intents metadata extraction failed for both modules; the shortcut would be invisible — not shipping"
+fi
 xcrun --sdk iphoneos strip -x "$APP/Cleaner"
 cp Info.plist "$APP/Info.plist"
 cp icons/AppIcon*@*.png "$APP/"
@@ -168,9 +246,24 @@ validate_app() {
     # not here: `strip -x` removes the local symbols, and Swift struct
     # metadata symbols are local — a post-strip symbol grep measures strip,
     # not the types (it failed a build that had the types in the code).
-    # Only the AppIntents link is checked here, on the final binary.
+    # Only the AppIntents link and the metadata package are checked here,
+    # on the final binary.
     otool -L "$app_path/Cleaner" | grep -q "AppIntents" || \
         fail "app binary does not link AppIntents"
+    # App Intents metadata (v2.7): the shipped .app must carry the file
+    # iOS actually reads to discover the shortcut — extract.actionsdata
+    # + version.json inside Metadata.appintents, with the CleanCacheIntent
+    # action and the CleanerShortcuts auto-shortcuts. Checked here, on the
+    # EXTRACTED IPA contents, so a packaging step that drops the
+    # directory fails the build instead of shipping an invisible shortcut.
+    # The intent TYPES were already verified pre-strip, above; this is the
+    # file the system consumes.
+    [[ -f "$app_path/Metadata.appintents/extract.actionsdata" ]] || \
+        fail "shipped app is missing Metadata.appintents/extract.actionsdata"
+    [[ -f "$app_path/Metadata.appintents/version.json" ]] || \
+        fail "shipped app is missing Metadata.appintents/version.json"
+    python3 "$ROOT/tests/check_appintents_metadata.py" "$app_path/Metadata.appintents" || \
+        fail "shipped app's App Intents metadata is invalid (see above)"
 }
 
 # Package to a same-directory temporary sibling, then validate the actual ZIP

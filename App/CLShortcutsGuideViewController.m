@@ -19,6 +19,7 @@
     NSArray<NSArray<NSDictionary *> *> *_sections;
     NSString *_statusFooter;
     NSString *_lastRunFooter;
+    NSString *_version;  // bundle short version, for the footers (no hardcoded version in copy)
 }
 
 - (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
@@ -66,15 +67,16 @@
     BOOL hasIntent = titles.count > 0;
     BOOL launchedOnce = [[NSUserDefaults standardUserDefaults] boolForKey:@"cl-ui-launched-once"];
     NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"?";
+    _version = version;
     NSString *statusValue = hasIntent
         ? [NSString stringWithFormat:@"v%@（带快捷指令）", version]
         : [NSString stringWithFormat:@"v%@（不带快捷指令）", version];
     if (hasIntent && launchedOnce) {
-        _statusFooter = @"都就绪了：现在去「快捷指令」里搜 Cleaner，就能看到「清理全部缓存」。搜不到就重启手机，系统重新索引后再试。";
+        _statusFooter = @"都就绪了：现在去「快捷指令」里搜 Cleaner，就能看到「清理全部缓存」。";
     } else if (hasIntent && !launchedOnce) {
-        _statusFooter = @"快捷指令已在包里，但系统要先看到 Cleaner 打开过一次才会索引它——你现在就在用它，退出后去「快捷指令」里搜就能看到。";
+        _statusFooter = @"快捷指令已在包里（安装时系统已经读到了它）。打开一次 Cleaner，再去「快捷指令」里搜就能看到。";
     } else {
-        _statusFooter = @"这个版本里没有注册到快捷指令（可能是旧版）。请先装 0.2.6，再打开一次 Cleaner。";
+        _statusFooter = [NSString stringWithFormat:@"这个版本里没有注册到快捷指令（可能是旧版）。请先装 %@，再打开一次 Cleaner。", version];
     }
 
     // Last intent run, from the App Group diagnostics (v2.6): what the
@@ -136,14 +138,18 @@
 {
     if (section == 0) return _statusFooter;
     if (section == 1) return _lastRunFooter;
-    // v2.6: the 0.2.4 sentence is corrected — the cause of 0.2.4's missing
-    // shortcut was never established (the types WERE in the package,
-    // proven by the __swift5_types descriptors); 0.2.5/0.2.6 register
-    // the same way, and this page now shows the live status and the last
-    // run instead of asserting a fix. The force-quit caveat is an honest
-    // platform limit: a force-quit tells iOS to leave the app alone
-    // until it is opened again; normal suspended background is fine.
-    return @"点一下快捷指令，就在后台清理全部缓存和已启用的自定义规则，不打开 Cleaner，不需要服务器。第一次用之前必须先装 0.2.6、打开一次 Cleaner——系统索引之后才能在「快捷指令」里搜到它。如果把 Cleaner 从应用切换器里划掉（彻底退出），系统在下次打开它之前不会在后台启动它；平时留在后台（挂起）没关系，不需要管它。";
+    // v2.7: the mechanism is corrected — v2.4–v2.6 shipped NO
+    // Metadata.appintents at all (build.sh never ran the extraction),
+    // so the shortcut was invisible no matter how many times the app
+    // was opened; the types WERE in the package, proven by the
+    // __swift5_types descriptors. v2.7 extracts the metadata at build
+    // time and iOS reads it when the app is INSTALLED — opening the app
+    // does not index anything. Upgrading from a version that shipped no
+    // metadata needs a full delete + reinstall: overwriting keeps the
+    // old (empty) index. The force-quit caveat is an honest platform
+    // limit: a force-quit tells iOS to leave the app alone until it is
+    // opened again; normal suspended background is fine.
+    return [NSString stringWithFormat:@"点一下快捷指令，就在后台清理全部缓存和已启用的自定义规则，不打开 Cleaner，不需要服务器。装好 %@ 后打开一次 Cleaner，再去「快捷指令」里搜 Cleaner 就会出现「清理全部缓存」。如果是从旧版升级，先把 Cleaner 整个删掉再装——直接覆盖装，系统可能沿用旧版的索引，搜不到。如果把 Cleaner 从应用切换器里划掉（彻底退出），系统在下次打开它之前不会在后台启动它；平时留在后台（挂起）没关系，不需要管它。", _version];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath

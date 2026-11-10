@@ -1,0 +1,1 @@
+{"protocols":["AppIntents.AppIntent","AppIntents.AppEntity","AppIntents.AppShortcutsProvider","AppIntents.EntityQuery","AppIntents.IntentResult","AppIntents.SnippetIntent","AppIntents.WidgetConfigurationIntent","AppIntents.ControlConfigurationIntent"]}

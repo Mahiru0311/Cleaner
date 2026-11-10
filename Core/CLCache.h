@@ -163,6 +163,17 @@ typedef NS_ENUM(NSInteger, CLCacheMeasurementState) {
 // the container or any target changed, or the path ancestry became unsafe.
 BOOL CLCacheValidateItem(CLCacheItem *item, NSString * _Nullable * _Nullable reason);
 
+// Every app container under Data/Application, from the filesystem —
+// independent of the scan store, so the rule picker lists apps that
+// were never scanned (v2.7). Lightweight items (name, bundleID,
+// containerPath only — no cache measurement), one per bundle id, sorted
+// by name. Runs on the caller's queue (off the main thread —
+// cl_load_display_names blocks); progress is the enumerate progress.
+// Nil when the enumeration fails or is cancelled.
+NSArray<CLCacheItem *> *_Nullable cl_all_app_containers(
+    CLScanCancellation *_Nullable cancellation,
+    void (^_Nullable progress)(int64_t done, int64_t total, NSUInteger found));
+
 // Last completed scan, shared by Home and the Cleaner page.
 extern NSString *const CLCacheStoreDidUpdateNotification;
 

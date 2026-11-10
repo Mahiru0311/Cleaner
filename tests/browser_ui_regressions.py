@@ -430,9 +430,13 @@ require(build, "-Onone", "swiftc compiles the intent file without optimisation")
 # $s14CleanerIntents0A9ShortcutsV ("Cleaner" -> 0A) and "appShortcuts" as
 # 03appC0 — the literal strings never appear. The old greps looked for
 # the literals and failed on five builds even though the types were
-# present all along.
-require(build, "[$]s14CleanerIntents16CleanCacheIntentV", "build checks the mangled CleanCacheIntent symbol")
-require(build, "[$]s14CleanerIntents0A9ShortcutsV", "build checks the mangled CleanerShortcuts symbol (word-substituted form)")
+# present all along. v2.7: the check is parameterized by module (the
+# fallback module "Cleaner" has the same substitution: $s7Cleaner0A9ShortcutsV),
+# so the literals below are the per-module prefixes + the suffixes.
+require(build, "prefix='[$]s14CleanerIntents'", "build checks the mangled symbols for the CleanerIntents module")
+require(build, "prefix='[$]s7Cleaner'", "build checks the mangled symbols for the fallback Cleaner module")
+require(build, '"${prefix}16CleanCacheIntentV"', "build checks the mangled CleanCacheIntent symbol")
+require(build, '"${prefix}0A9ShortcutsV"', "build checks the mangled CleanerShortcuts symbol (word-substituted form)")
 require(build, "0A9ShortcutsV03appC0", "build checks the appShortcuts witness (substituted mangled form)")
 # The symbol check must run BEFORE strip: strip -x removes the local
 # symbols (v2.4 binary: 415 global, 1 local), so a post-strip symbol grep
@@ -469,33 +473,43 @@ forbid(settings, "copy-clean", "copy-clean action in Settings")
 forbid(settings, "copy-scan", "copy-scan action in Settings")
 require(settings, "不打开应用", "background shortcut copy in Settings")
 require(settings, "清理全部缓存", "intent name in Settings")
+require(settings, "整个删掉再装", "settings states the delete-and-reinstall upgrade")
+forbid(settings, "0.2.6", "no hardcoded 0.2.6 in Settings")
+forbid(settings, "系统索引之后", "open-once-indexing promise is gone from Settings")
 require(cleaner, "startShortcutAction", "cleaner page shortcut entry point")
 
-# --- Shortcuts guide (v2.5): the user could not find the shortcut at all
-# (20:44 screenshot: search "cleaner" in the Shortcuts app → 0 results;
-# 20:46: the phone really runs v0.2.4 (1), already opened, still 0 — "not
-# installed / never opened" are both ruled out. The cause was NEVER
-# established: the 20:46 "optimizer removed the types" diagnosis was
-# WRONG and is withdrawn — the types WERE in the v2.4 binary, proven by
-# the __swift5_types descriptors. v2.6 therefore does not assert a fix:
-# the guide states the preconditions (install 0.2.6, open Cleaner once,
-# let the system index, then search), shows a LIVE status read from the
-# real registration (not a hardcoded string), shows the LAST RUN (what
-# the shortcut actually did, including whether the app was opened for
-# it), and has a button that opens the Shortcuts app. "Not found" is NOT
-# reported as fixed until the user finds it on-device and taps it once.
+# --- Shortcuts guide (v2.7): the cause is ESTABLISHED now — the shipped
+# .app contained NO Metadata.appintents (build.sh never ran the
+# extraction Xcode does automatically), so iOS had nothing to read and
+# the shortcut never appeared, no matter how many times the app was
+# opened. The types WERE in the binary all along (__swift5_types +
+# __swift5_proto verified on the shipped v2.4/v2.5/v2.6 IPAs). v2.7
+# extracts the metadata at build time; iOS reads it when the app is
+# INSTALLED — opening the app does not index anything, and restarting
+# the phone never helped. The guide states the real flow (install, open
+# once, search) plus the full delete-and-reinstall instruction for
+# upgrading from a version that shipped no metadata, shows a LIVE status
+# read from the real registration (not a hardcoded string), shows the
+# LAST RUN (what the shortcut actually did, including whether the app
+# was opened for it), and has a button that opens the Shortcuts app.
+# "Not found" is NOT reported as fixed until the user finds it on-device
+# and taps it once. No version is hardcoded in the copy: the footers use
+# the bundle's short version.
 guide = read(APP / "CLShortcutsGuideViewController.m")
 require(guide, "shortcutTitles", "guide shows the registered shortcut titles")
 require(guide, "cl-ui-launched-once", "guide shows whether the app was launched once")
 require(guide, "shortcuts://", "button opens the Shortcuts app")
-require(guide, "先装 0.2.6", "precondition: install 0.2.6 first")
-require(guide, "打开一次 Cleaner", "precondition: open Cleaner once so the system indexes")
-require(guide, "重启手机", "fallback: restart the phone to re-index")
+require(guide, "打开一次 Cleaner", "step: open Cleaner once after installing")
+require(guide, "整个删掉再装", "upgrade needs a full delete + reinstall")
+require(guide, "安装时系统已经读到了它", "install-time metadata indexing, not open-once indexing")
 require(guide, "不需要服务器", "no-server note in the guide")
 require(guide, "上次运行", "guide shows the last intent run")
 require(guide, "cl_intent_last_run", "last run read from the App Group diagnostics")
 require(guide, "后台运行，未打开应用", "last run distinguishes a headless run")
 require(guide, "彻底退出", "force-quit caveat in the guide")
+forbid(guide, "搜不到就重启手机", "restart-the-phone fallback is gone (it never helped)")
+forbid(guide, "系统索引之后", "open-once-indexing promise is gone")
+forbid(guide, "0.2.6", "no hardcoded 0.2.6 in the guide")
 forbid(guide, '@"cleaner://clean"', "copy-clean button in the guide")
 forbid(guide, "copy-clean", "copy-clean action in the guide")
 forbid(guide, "0.2.4 有个构建问题导致意图根本没进包", "false 0.2.4 build-problem text is gone")
@@ -517,6 +531,56 @@ require(intents, "openAppWhenRun = false", "intent still declared background (v2
 require(background, "cl_intent_record_run", "diagnostics writer in Core")
 require(background, "cl_intent_last_run", "diagnostics reader in Core")
 require(background, "cl-intent-last-run.plist", "last-run plist in the App Group")
+
+# --- App Intents metadata (v2.7): the shipped .app must carry
+# Metadata.appintents — the file iOS reads to discover App Shortcuts.
+# v2.4–v2.6 never ran the extraction, so the shortcut never appeared
+# even though the types were in the binary. build.sh now emits the Swift
+# const-values output (-emit-const-values + -emit-const-values-path +
+# -const-gather-protocols-file) and runs appintentsmetadataprocessor
+# after linking, before signing; if the processor extracts nothing for
+# the separate CleanerIntents module, the file is recompiled as the app's
+# own module ("Cleaner") and the extraction is retried. The package is
+# validated by tests/check_appintents_metadata.py, which parses the
+# extract.actionsdata iOS reads (not a proxy): CleanCacheIntent must be
+# discoverable and background, and the CleanerShortcuts auto-shortcuts
+# must carry both phrases. validate_app re-checks the same package on
+# the EXTRACTED IPA contents. CFBundleVersion is 7 now (it was frozen
+# at 1 across 0.2.4/0.2.5/0.2.6, and shortcutsd caches metadata by
+# bundle-ID + version, so a same-version reinstall often does not
+# re-index). The "system discovers intents by scanning the binary"
+# claim is gone from main.m and the intent file: the metadata file is
+# what the system reads.
+require(build, "appintentsmetadataprocessor", "build extracts the App Intents metadata")
+require(build, "-emit-const-values", "swiftc emits const-values output")
+require(build, "-emit-const-values-path", "swiftc writes the .swiftconstvalues file")
+require(build, "-const-gather-protocols-file", "swiftc gathers the AppIntents protocols")
+require(build, "swift_const_gather_protocols.json", "protocols file for const gathering")
+require(build, "Metadata.appintents", "metadata lands in the .app")
+require(build, "check_appintents_metadata.py", "build validates the metadata package")
+require(build, "build_app_binary Cleaner", "fallback: recompile as the app module and retry")
+require(build, "extract_app_intents Cleaner", "fallback extraction for the app module")
+require(build, '"$APP/Metadata.appintents"', "metadata written into the .app before signing")
+require(build, '"$app_path/Metadata.appintents', "metadata checked on the extracted IPA")
+protocols = read(ROOT / "Intents" / "swift_const_gather_protocols.json")
+require(protocols, '"protocols"', "protocols file has the protocols list")
+require(protocols, "AppIntents.AppIntent", "AppIntent is gathered")
+require(protocols, "AppIntents.AppShortcutsProvider", "AppShortcutsProvider is gathered")
+validator = read(ROOT / "tests" / "check_appintents_metadata.py")
+require(validator, "CleanCacheIntent", "validator checks the intent")
+require(validator, "isDiscoverable", "validator checks discoverability")
+require(validator, "openAppWhenRun", "validator checks background execution")
+require(validator, "清理全部缓存", "validator checks the intent title")
+require(validator, "CleanerShortcuts", "validator checks the provider")
+require(validator, "autoShortcuts", "validator checks the auto-shortcuts section")
+require(validator, "extract.actionsdata", "validator parses the actions data")
+require(validator, "version.json", "validator requires version.json")
+require(info, "<string>7</string>", "CFBundleVersion is 7")
+forbid(info, "<string>1</string>", "old frozen CFBundleVersion 1 is gone")
+require(main, "Metadata.appintents", "main comment describes the metadata file")
+forbid(main, "discovers intents by scanning the binary", "binary-scanning claim is gone from main")
+require(intents, "Metadata.appintents", "intent header describes the metadata file")
+forbid(intents, "discovers intents by scanning the binary", "binary-scanning claim is gone from the intent file")
 
 # --- Directory picker for custom rules (v2.5): tap 添加规则 opens a NEW
 # page (BleachBit's Custom tab + file picker; SD Maid SE's custom-filter
@@ -556,11 +620,33 @@ require(picker, 'label:@"最小大小"', "labelled min-size field")
 require(picker, 'label:@"最大大小"', "labelled max-size field")
 require(picker, "duration:0.25", "listing cross-dissolve")
 
+# --- Directory picker (v2.7): the app list comes from the FILESYSTEM,
+# not from the scan store. The user (2026-11-10 23:48) reported that
+# adding a rule only covered what the scanner found, not the entire
+# directory. cl_all_app_containers enumerates Data/Application with the
+# same cached inode scan the Apps page uses, labels each container and
+# dedupes by bundle id; the picker enumerates it on a background queue
+# and caches it for the page's lifetime. The manual path resolves
+# against the same full list, and editing a rule whose app was never
+# scanned finds it there too. The "go scan first" copy is gone.
+require(picker, "cl_all_app_containers", "picker lists all containers from the filesystem")
+require(picker, "loadAllApps", "picker enumerates the full list on a background queue")
+require(picker, "没有找到应用容器", "picker empty state no longer demands a scan")
+require(picker, "正在查找应用", "picker shows enumeration progress")
+require(custom, "不属于任何应用的容器", "pasted path fails against all containers, not just scanned ones")
+forbid(picker, "请先去清理页扫描一次", "picker no longer demands a scan first")
+forbid(picker, "还没有扫描结果", "picker no longer shows the scan-first empty state")
+forbid(custom, "已扫描应用的容器", "resolver no longer limits itself to scanned apps")
+
 # --- Mode line (v2.5): v2.1's 15pt + max 2 lines did not stop the
 # mid-word break ("<App Group> [沙 / 盒模式]" on the 20:46 screenshot).
 # The copy is now just "沙盒模式" — short enough to never break.
 require(home, "沙盒模式", "mode line is short")
 forbid(home, '@"<App Group> [沙盒模式]"', "old mode line that broke mid-word")
+# v2.7: the version label is dynamic (reads the bundle), and the two
+# fallbacks use 0.2.7 — no hardcoded 0.2.6 anywhere in Home.
+require(home, 'stringWithFormat:@"版本：%@"', "version label is dynamic, not hardcoded")
+forbid(home, "0.2.6", "no hardcoded 0.2.6 in home")
 
 # --- Animations (v2.3, redone): scan batches insert with a fade, the
 # progress bar shows the real scan fraction, cleaning shows a per-row
@@ -597,7 +683,7 @@ require(main, "cl_set_container_label_resolver", "container label resolver")
 require(main, "cl_set_container_list_provider", "container list provider")
 require(main, "cl_recover_interrupted_restore", "interrupted restore recovery")
 
-# --- Build: only the v2 sources, iPhone only, 0.2.6. ---
+# --- Build: only the v2 sources, iPhone only, 0.2.7. ---
 for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.m",
                "Core/CLLaunchServices.m", "Core/CLCustomClean.m", "Core/CLBackgroundClean.m",
                "App/CLUI.m",
@@ -623,8 +709,8 @@ forbid(build, "-Os -dead_strip", "dead-strip removed from the link")
 runner = read(ROOT / "tests" / "run_all_tests.sh")
 for source in ("App/CLRulePickerViewController.m", "App/CLShortcutsGuideViewController.m"):
     require(runner, source, f"strict-check source {source}")
-require(info, "<string>0.2.6</string>", "version 0.2.6")
-forbid(info, "<string>0.2.5</string>", "old version 0.2.5")
+require(info, "<string>0.2.7</string>", "version 0.2.7")
+forbid(info, "<string>0.2.6</string>", "old version 0.2.6")
 forbid(info, "CFBundleIcons~ipad", "iPad icon set")
 forbid(info, "UISupportedInterfaceOrientations~ipad", "iPad orientations")
 

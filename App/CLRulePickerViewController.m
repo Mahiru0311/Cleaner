@@ -19,6 +19,12 @@
 //  themselves; a directory outside Library/Caches + tmp is allowed but
 //  warns (user data) and needs an explicit second confirm. The engine
 //  re-validates everything before deleting (Core).
+//  v2.7 — the app list comes from the FILESYSTEM (cl_all_app_containers),
+//  not from the scan store: adding a rule used to cover only what the
+//  scanner found, so an app that was never scanned could not get a rule
+//  at all. The list is enumerated on a background queue (the same cached
+//  inode scan the Apps page uses) and cached for this page's lifetime;
+//  the manual path resolves against the same full list.
 //  No emoji; SF Symbols only.
 //
 
@@ -76,6 +82,15 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
     UISearchBar *_searchBar;
     NSString *_appFilter;
     NSString *_pendingRelativePath;  // edit prefill: jump here once the app is chosen
+    // v2.7: the app list is ALL containers from the filesystem, not just
+    // the scanned ones (cl_all_app_containers). Enumerated once per page
+    // on a background queue and cached for this page's lifetime.
+    NSArray<CLCacheItem *> *_allApps;
+    BOOL _appsLoaded;               // the full list was enumerated (even if empty/failed)
+    BOOL _appsLoading;              // enumeration in flight
+    NSString *_appsStatus;          // loading/empty status for the app list
+    BOOL _pendingManualPathRetry;   // a pasted path is waiting for the full list
+    NSString *_pendingEditBundleID; // edit prefill: the rule's app, not in the scan store
     // Filter prefill, computed once from the rule being edited. The text
     // fields must NOT be re-set on every cell display (that would wipe
     // what the user typed whenever the table reloads).
@@ -132,6 +147,10 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
         }
         if (_app) {
             _pendingRelativePath = _editingRule[CLCustomRulePatternKey];
+        } else if (bid.length) {
+            // v2.7: the rule's app was never scanned — look it up in the
+            // full container list once it is enumerated (loadAllApps).
+            _pendingEditBundleID = bid;
         }
     }
     [self reloadForCurrentState];
@@ -152,27 +171,80 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
     return _path.lastPathComponent;
 }
 
-- (NSArray<CLCacheItem *> *)scannedApps
+- (NSArray<CLCacheItem *> *)allApps
 {
     NSMutableArray<CLCacheItem *> *apps = [NSMutableArray new];
-    for (CLCacheItem *it in [CLCacheStore shared].items) {
-        if (it.crashLogs || !it.bundleID.length) continue;
+    for (CLCacheItem *it in _allApps) {
         if (_appFilter.length) {
             NSString *hay = [[NSString stringWithFormat:@"%@ %@", it.name, it.bundleID] lowercaseString];
             if (![hay containsString:_appFilter.lowercaseString]) continue;
         }
         [apps addObject:it];
     }
-    [apps sortUsingComparator:^NSComparisonResult(CLCacheItem *a, CLCacheItem *b) {
-        return [a.name localizedStandardCompare:b.name];
-    }];
     return apps;
+}
+
+// v2.7: enumerates ALL app containers from the filesystem (not just the
+// scanned ones) on a background queue, then caches the list for this
+// page's lifetime. The inode enumeration itself is shared-cached for
+// 10 minutes (cl_enumerate), so re-opening the picker is cheap.
+- (void)loadAllApps
+{
+    if (_appsLoaded || _appsLoading) return;
+    _appsLoading = YES;
+    _appsStatus = @"正在查找应用…";
+    if (self.isAppListMode) [self.tableView reloadData];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(cl_io(), ^{
+        CLScanCancellation *cancel = [CLScanCancellation new];
+        NSArray<CLCacheItem *> *apps = cl_all_app_containers(cancel, ^(int64_t done, int64_t total, NSUInteger __unused f) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf || !strongSelf->_appsLoading) return;
+                strongSelf->_appsStatus = [NSString stringWithFormat:@"正在查找应用… %lld%%",
+                                           total ? (long long)(done * 100 / total) : 0];
+                if (strongSelf.isAppListMode) [strongSelf.tableView reloadData];
+            });
+        });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf->_appsLoading = NO;
+            strongSelf->_appsLoaded = YES;
+            strongSelf->_allApps = apps ?: @[];
+            strongSelf->_appsStatus = apps ? nil : @"没有找到应用容器。";
+            // Edit prefill: the rule's app was not in the scan store —
+            // look it up in the full container list now.
+            if (strongSelf->_pendingEditBundleID.length) {
+                NSString *bid = strongSelf->_pendingEditBundleID;
+                strongSelf->_pendingEditBundleID = nil;
+                for (CLCacheItem *it in strongSelf->_allApps) {
+                    if ([it.bundleID isEqualToString:bid]) {
+                        strongSelf->_app = it;
+                        strongSelf->_pendingRelativePath = strongSelf->_editingRule[CLCustomRulePatternKey];
+                        break;
+                    }
+                }
+                if (!strongSelf->_app)
+                    cl_alert(strongSelf, @"找不到这个应用",
+                             @"这个规则的应用不在手机上了（可能已卸载），请重新选一个应用。");
+            }
+            BOOL retriedManualPath = NO;
+            if (strongSelf->_pendingManualPathRetry) {
+                strongSelf->_pendingManualPathRetry = NO;
+                [strongSelf goToManualPath];
+                retriedManualPath = YES;
+            }
+            if (!retriedManualPath) [strongSelf reloadForCurrentState];
+        });
+    });
 }
 
 - (void)reloadForCurrentState
 {
     if (self.isAppListMode) {
         self.navigationItem.rightBarButtonItem = nil;
+        [self loadAllApps];
         if (!_searchBar) {
             UISearchBar *bar = [[UISearchBar alloc] init];
             bar.placeholder = @"搜索应用";
@@ -279,7 +351,7 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     if (self.isAppListMode) {
-        NSArray *apps = [self scannedApps];
+        NSArray *apps = [self allApps];
         return apps.count ?: 1;
     }
     switch (section) {
@@ -310,9 +382,9 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     if (self.isAppListMode) {
-        return [CLCacheStore shared].items.count
-            ? @"先选一个应用，再进它的容器里选目录。"
-            : @"还没有扫描结果，请先去清理页扫描一次，再回来添加规则。";
+        if (!_appsLoaded) return _appsStatus ?: @"正在查找应用…";
+        if (!_allApps.count) return _appsStatus ?: @"没有找到应用容器。";
+        return @"先选一个应用，再进它的容器里选目录。";
     }
     if (section == CLRulePickerSectionScope) {
         NSString *rel = [self relativePath];
@@ -367,13 +439,14 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
     if (self.isAppListMode) {
-        NSArray<CLCacheItem *> *apps = [self scannedApps];
+        NSArray<CLCacheItem *> *apps = [self allApps];
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"app"]
             ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"app"];
         UIListContentConfiguration *c = cell.defaultContentConfiguration;
         if (!apps.count) {
-            c.text = @"还没有扫描结果";
-            c.secondaryText = @"请先去清理页扫描一次，再回来添加规则。";
+            c.text = _appsLoading ? @"正在查找应用…" : @"没有找到应用";
+            c.secondaryText = _appsStatus ?: (_appsLoading ? @"正在枚举全部应用容器…"
+                                                           : @"没有找到任何应用容器。");
             c.secondaryTextProperties.color = UIColor.secondaryLabelColor;
             cell.contentConfiguration = c;
             cell.accessoryType = UITableViewCellAccessoryNone;
@@ -548,7 +621,7 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (self.isAppListMode) {
-        NSArray<CLCacheItem *> *apps = [self scannedApps];
+        NSArray<CLCacheItem *> *apps = [self allApps];
         if (!apps.count || (NSUInteger)indexPath.row >= apps.count) return;
         _app = apps[(NSUInteger)indexPath.row];
         _path = nil;
@@ -613,16 +686,23 @@ static BOOL cl_picker_path_inside_container(NSString *path, NSString *container)
         return;
     }
     NSString *bid = nil, *rel = nil, *reason = nil;
-    if (!cl_custom_clean_resolve_pasted_path(text, [CLCacheStore shared].items, _app.bundleID, &bid, &rel, &reason)) {
+    // v2.7: the pasted path resolves against ALL containers, not just
+    // the scanned ones — load the full list first, then retry.
+    if (!_appsLoaded) {
+        _pendingManualPathRetry = YES;
+        [self loadAllApps];
+        return;
+    }
+    if (!cl_custom_clean_resolve_pasted_path(text, _allApps, _app.bundleID, &bid, &rel, &reason)) {
         cl_alert(self, @"路径不对", reason ?: @"无法解析这条路径。");
         return;
     }
     CLCacheItem *target = nil;
-    for (CLCacheItem *it in [CLCacheStore shared].items) {
-        if (!it.crashLogs && [it.bundleID isEqualToString:bid]) { target = it; break; }
+    for (CLCacheItem *it in _allApps) {
+        if ([it.bundleID isEqualToString:bid]) { target = it; break; }
     }
     if (!target) {
-        cl_alert(self, @"找不到应用", @"这条路径的应用没有扫描结果，请先去清理页扫描一次。");
+        cl_alert(self, @"找不到应用", @"这条路径的应用没有容器。");
         return;
     }
     _app = target;

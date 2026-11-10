@@ -62,9 +62,14 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
     # The App Intent (v2.4) is Swift, compiled into the main app target:
     # compile it first — it emits the generated ObjC header main.m imports
     # (CleanerIntents-Swift.h) and the object linked into the app binary.
-    # This also type-checks the Swift file on the macOS runner.
+    # This also type-checks the Swift file on the macOS runner. The
+    # const-values flags are the same as build.sh's (v2.7): a misspelled
+    # flag fails the preflight here instead of the release build.
     xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$IOS_SDK" -O -swift-version 5 \
         -parse-as-library -module-name CleanerIntents \
+        -emit-const-values \
+        -Xfrontend -emit-const-values-path "$OUT/CleanerIntents.swiftconstvalues" \
+        -Xfrontend -const-gather-protocols-file Intents/swift_const_gather_protocols.json \
         -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
         -emit-objc-header-path "$OUT/CleanerIntents-Swift.h" \
         -I Core -c Intents/CleanerIntents.swift -o "$OUT/CleanerIntents.o" > "$OUT/ios-swift.log" 2>&1 || {

@@ -76,9 +76,12 @@
 int main(int argc, char *argv[])
 {
     @autoreleasepool {
-        // Keep the App Intent types linked (CleanerIntents.swift): the
-        // system discovers intents by scanning the binary, and nothing
-        // else references them — without this call, -dead_strip could
+        // Keep the App Intent types linked (CleanerIntents.swift): iOS
+        // discovers intents from the build-time metadata file
+        // Metadata.appintents (extracted by appintentsmetadataprocessor
+        // in build.sh from the Swift const-values output), not by
+        // scanning the binary — but the metadata can only name types
+        // that survive the link, so without this call -dead_strip could
         // drop them and the shortcut would silently disappear.
         [CLIntentsBootstrap keepAlive];
         cl_set_container_label_resolver(cl_bundle_id_for_container);

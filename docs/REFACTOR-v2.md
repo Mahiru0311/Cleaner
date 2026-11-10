@@ -212,7 +212,7 @@ v0.1 的 `main.m / WQCache.m / WQApps.m / WQPlistEditor.m / WQHexViewer.m / WQSh
 
 ## 7. Stage 1 实现状态（2026-11-10 晚，审计后）
 
-分支 `refactor/v2`，v0.1 的 `main` 不动。新代码共 7,010 行
+分支 `refactor/v2`，v0.1 的 `main` 不动。新代码共 7,008 行（构建修复后）
 （Core 4,685 行：CLGrant 671、CLScan 805、CLCache 536、CLApp 780、CLLaunchServices 820、
 CLSafety.h 398、CLAppSupport.h 367、其余头文件 308；
 App 2,325 行：清理 559、首页 521、应用 465、设置 127、胶囊栏 164、CLUI 285、日志 40、main 58、
@@ -238,7 +238,23 @@ App 2,325 行：清理 559、首页 521、应用 465、设置 127、胶囊栏 16
 `python3 -m unittest discover` 16 个，2 个失败与 v0.1 相同（`test_build` 两个用例缺 `plutil`，
 Linux 上本来就跑不了）；`bash -n build.sh` 及各 runner 脚本通过；
 结构检查（括号/`@implementation`/`@end`/重复方法）与符号检查（跨文件 static 调用、重复定义）全过。
-ObjC 真编译只能靠 GitHub Actions macOS 构建验证。
+
+GitHub Actions 构建：2026-11-10，8 轮修复后通过。
+成功运行 42796385987（Xcode 26.6，iOS SDK 26.5），head 294a2b5a527f，
+artifact `Cleaner-ipa` 132,764 字节（zip）。下载验证
+（`~/workspace/downloads/cleaner-v2-ipa/Cleaner.ipa`，138,209 字节，
+SHA-256 e3de9b7bac1ac4258493b7f5ef8e3b65a3db0616ef27325f7e15108697e0cc45）：
+Mach-O 64-bit arm64，主二进制 348,848 字节（目标 <500KB ✓），
+IPA 138,209 字节（目标 <250KB ✓）；Info.plist：Cleaner /
+com.mahiru.cleaner / 0.2.0 / build 1 / MinimumOS 26.0 / zh_CN /
+iPhone only / 竖屏；图标只含 iPhone 尺寸（40x40 / 60x60 @2x/@3x），
+米色底 #F5F1E8；22 条中文串（缓存清理/已授权/受限/清理缓存/崩溃日志等）
+全部在二进制里（UTF-16LE）；build.sh 的签名后校验已确认 entitlements
+含 App Group（ad-hoc 签名，用户仍需用保留 App Group 的方式重签）。
+8 轮失败的原因全是提取/移植时丢的声明、导入、重复行和可空性标注，
+已逐轮修掉并把检查固化进本地脚本（`/tmp/v2_check.py` 结构/符号/导入/
+重复行检查、`/tmp/v2_imports.py` 跨文件导入闭包检查）。
+真机验证仍未做（见下）。
 
 ## 6. 风险（先说）
 

@@ -317,8 +317,6 @@ static NSString *cl_sample_area(NSString *path)
 
 // LaunchServices API: each app's and plug-in's data container, where the
 // system lets this app ask (it refuses on iOS 27).
-static NSDictionary<NSString *, NSString *> *gCLLSAPILabels;
-
 static NSDictionary<NSString *, NSArray<NSString *> *> *cl_lsapi_list_containers(NSArray<NSString *> *roots, NSString **summary)
 {
     Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
@@ -360,9 +358,17 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *cl_lsapi_list_containers
     *summary = [NSString stringWithFormat:@"LaunchServices API: %lu apps and %lu plug-ins, %lu data containers (%lu apps, %lu extensions)",
                 (unsigned long)proxies, (unsigned long)plugins, (unsigned long)labels.count,
                 (unsigned long)[result[roots[0]] count], (unsigned long)[result[roots[1]] count]];
-    @synchronized (NSNull.null) { gCLLSAPILabels = [labels copy]; }
     return result;
 }
+
+// Container-manager query function types (dlsym'd from
+// libsystem_containermanager.dylib; same block as in CLGrant.m).
+typedef void *(*cq_create_fn)(void);
+typedef void (*cq_set_u64_fn)(void *, uint64_t);
+typedef void (*cq_free_fn)(void *);
+// The callback returns true to continue; a void block leaves that value undefined.
+typedef void (*cq_iterate_fn)(void *, bool (^)(void *));
+typedef const char *(*co_get_path_fn)(void *);
 
 // The container manager can list containers directly (instant, no scan). On
 // releases where it answers this app only with its own containers, the list

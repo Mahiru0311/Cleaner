@@ -14,6 +14,7 @@
 //
 
 #import "CLGrant.h"
+#import "CLCache.h"
 #import "CLSafety.h"
 
 
@@ -575,7 +576,6 @@ BOOL cl_copy_contents(NSString *srcDir, NSString *dstDir, NSString **errorText)
 // or containers where either is unavailable. Paths and identifiers stay in a
 // short-lived cache because labels are requested for every row.
 static NSDictionary<NSString *, NSString *> *cl_container_identifier_map(void)
-static NSDictionary<NSString *, NSString *> *cl_container_identifier_map(void)
 {
     static NSObject *lock;
     static NSDictionary<NSString *, NSString *> *cached;
@@ -650,9 +650,8 @@ NSString *cl_container_label(NSString *dir)
     }
     // Prefer the container-manager query over the metadata plist: it needs no
     // file permission and can also label containers whose plist is root-only.
-    NSString *fromAPI = nil;
-    @synchronized (NSNull.null) { fromAPI = gCLLSAPILabels[cl_norm(dir)]; }
-    if (fromAPI.length) return fromAPI;
+    // (The LaunchServices API labels were the same bundle ids the resolver
+    // below returns from the database, so they are not consulted twice.)
     NSString *queried = cl_container_identifier_map()[CLCanonicalVarPath(dir)];
     if (queried.length) return queried;
     // The LaunchServices database maps app and extension data containers to

@@ -7,6 +7,7 @@
 #import "CLScan.h"
 #import "CLSafety.h"
 #import "CLLaunchServices.h"
+#import <dirent.h>
 #import <errno.h>
 #import <sys/stat.h>
 
@@ -57,9 +58,6 @@ CLMeasureResult cl_measure_tree(NSString *dir, CLScanCancellation *cancellation,
     if (bytes) *bytes = total;
     return limited ? CLMeasureResultLimited : CLMeasureResultKnown;
 }
-
-BOOL cl_remove_entry(int parent, NSString *name, NSString *path, unsigned long long *freed,
-                            CLScanCancellation *cancellation);
 
 // Purge uses fd-relative removal, so the path is only a swap detector. One
 // lstat is enough; reopening every ancestor for every child is needlessly
@@ -170,13 +168,6 @@ NSString *const CLCrashLogsPath =
 @implementation CLCacheItem
 - (unsigned long long)bytes { return self.cacheBytes + self.tempBytes; }
 @end
-
-typedef NS_ENUM(NSInteger, CLCacheMeasurementState) {
-    CLCacheMeasurementMissing,
-    CLCacheMeasurementKnown,
-    CLCacheMeasurementLimited,
-    CLCacheMeasurementCancelled,
-};
 
 static CLCacheMeasurementState CLCacheMeasureDirectory(NSString *path,
                                                         CLScanCancellation *cancellation,

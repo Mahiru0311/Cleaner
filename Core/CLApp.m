@@ -9,7 +9,7 @@
 
 #import "CLLaunchServices.h"
 
-#import "CLAppsSupport.h"
+#import "CLAppSupport.h"
 #import <errno.h>
 #import <sys/stat.h>
 

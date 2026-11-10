@@ -7,6 +7,7 @@
 
 #import "CLLaunchServices.h"
 #import "CLGrant.h"
+#import "CLScan.h"
 #import <stdlib.h>
 #import <string.h>
 #import <sys/stat.h>

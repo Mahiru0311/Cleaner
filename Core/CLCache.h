@@ -74,20 +74,15 @@ typedef NS_ENUM(NSInteger, CLCacheMeasurementState) {
     CLCacheMeasurementCancelled,
 };
 
-// Measures one cache/tmp tree; Limited when the tree could not be fully read.
-CLCacheMeasurementState CLCacheMeasureDirectory(NSString *path,
-                                               CLScanCancellation *_Nullable cancellation,
-                                               unsigned long long *_Nullable bytes);
+// Removes one entry by fd-relative rename; shared with CLGrant's copy path
+// (a failed copy cleans up the partial stage). Callers may pass NULL/nil.
+BOOL cl_remove_entry(int parent, NSString *name, NSString *path,
+                     unsigned long long *_Nullable freed,
+                     CLScanCancellation *_Nullable cancellation);
 
 // Re-validates a scanned item right before purging it; NO with *reason when
 // the container or any target changed, or the path ancestry became unsafe.
-BOOL CLCacheValidateItem(CLCacheItem *item, NSString **reason);
-
-// The crash-log path must be exactly the expected canonical directory.
-BOOL CLCacheCrashPathIsSafe(NSString *path);
-
-CLCacheTargetRecord *CLCacheTargetRecordForPath(NSString *path, NSString *_Nullable relativePath);
-void CLCacheCaptureContainerIdentity(CLCacheItem *item);
+BOOL CLCacheValidateItem(CLCacheItem *item, NSString * _Nullable * _Nullable reason);
 
 // Last completed scan, shared by Home and the Cleaner page.
 extern NSString *const CLCacheStoreDidUpdateNotification;

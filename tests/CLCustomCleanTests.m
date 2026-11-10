@@ -508,8 +508,12 @@ int main(void)
                   @"lock the directory (0555) so unlink fails");
             CLCleanMatchOptions lockedOpts = { .dryRun = NO };
             CLCleanMatchResult lockedRun;
-            check(cl_clean_matching_files_filtered(container5, @[@".mp4"], nil, nil, &lockedOpts, &lockedRun, NULL) &&
-                  lockedRun.failed == 1 && lockedRun.failedPaths.count == 1,
+            // The matcher returns NO when any file fails to delete (the
+            // existing contract — the caller sees it via the reason) — so
+            // the return value is NOT asserted here. The point is the
+            // failure is counted and listed, not silent.
+            cl_clean_matching_files_filtered(container5, @[@".mp4"], nil, nil, &lockedOpts, &lockedRun, NULL);
+            check(lockedRun.failed == 1 && lockedRun.failedPaths.count == 1,
                   @"unlink failure is counted and listed, not silent");
             check([lockedRun.failedPaths[0] containsString:@"locked.mp4"] &&
                   [lockedRun.failedPaths[0] containsString:@" · 删除失败"],

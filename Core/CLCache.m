@@ -9,7 +9,9 @@
 #import "CLLaunchServices.h"
 #import <dirent.h>
 #import <errno.h>
+#import <fcntl.h>
 #import <sys/stat.h>
+#import <unistd.h>
 
 CLMeasureResult cl_measure_tree(NSString *dir, CLScanCancellation *cancellation, unsigned long long *bytes)
 {
@@ -22,7 +24,14 @@ CLMeasureResult cl_measure_tree(NSString *dir, CLScanCancellation *cancellation,
         return CLMeasureResultLimited;
     }
     if (!S_ISDIR(st.st_mode)) return CLMeasureResultLimited;
-    if (![NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]) cl_grant(dir);
+    // Cheap access probe: one open() instead of a full top-level listing.
+    // The old contentsOfDirectoryAtPath call ran a whole readdir pass and
+    // allocated a string per entry just to test whether the directory is
+    // readable — pure waste on every measured tree (v2.2).
+    int probe = open(dir.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_CLOEXEC);
+    if (probe < 0 && cl_grant(dir))
+        probe = open(dir.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_CLOEXEC);
+    if (probe >= 0) close(probe);
 
     NSURL *root = [NSURL fileURLWithPath:dir isDirectory:YES];
     NSArray<NSURLResourceKey> *keys = @[NSURLIsRegularFileKey, NSURLIsSymbolicLinkKey,
@@ -225,15 +234,88 @@ static CLCacheTargetRecord *CLCacheTargetRecordForPath(NSString *path, NSString 
     return record;
 }
 
-static void CLCacheCaptureContainerIdentity(CLCacheItem *item)
+// Same record, built from a stat the caller already took (the scanner stats
+// each target once for the measure cache, so re-statting here would be a
+// second identical stat per target per scan — v2.2).
+static CLCacheTargetRecord *CLCacheTargetRecordForPathWithStat(NSString *path, NSString *relativePath,
+                                                               CLCachePathState state, const struct stat *st)
 {
-    struct stat st = {0};
-    if (item.containerPath.length && cl_stat(item.containerPath, &st) && S_ISDIR(st.st_mode)) {
-        item.containerIdentityKnown = YES;
-        item.containerDevice = st.st_dev;
-        item.containerInode = st.st_ino;
-        item.containerMode = st.st_mode & S_IFMT;
+    CLCacheTargetRecord *record = [CLCacheTargetRecord new];
+    record.path = path;
+    record.relativePath = relativePath;
+    if (state == CLCachePathExisting && st) {
+        record.existed = YES;
+        record.identityKnown = YES;
+        record.device = st->st_dev;
+        record.inode = st->st_ino;
+        record.mode = st->st_mode & S_IFMT;
     }
+    return record;
+}
+
+#pragma mark - Persistent measurement cache (v2.2)
+//
+// A rescan re-measures every container's Caches + tmp trees from scratch,
+// even when nothing changed — that full walk is most of the scan time. The
+// cache remembers each container's measured sizes, keyed by the container
+// identity and the two directories' (mtime, size): a directory's mtime and
+// size change whenever entries are added, removed or renamed inside it, so
+// an unchanged pair means the tree is unchanged and the stored sizes are
+// still right. Entries expire after 24 h. The sizes are display-only: the
+// clean-time validation (CLCacheValidateItem) re-checks every identity
+// before anything is deleted, so a stale cached size can never cause a
+// wrong delete — at worst the list shows yesterday's number for an idle app.
+
+static const NSTimeInterval kCLMeasureCacheTTL = 24 * 3600;
+
+static NSString *cl_measure_cache_path(void)
+{
+    NSString *dir = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    return dir.length ? [dir stringByAppendingPathComponent:@"cl-cache-measure.plist"] : nil;
+}
+
+static BOOL cl_measure_cache_lookup(NSDictionary *cache, NSString *container,
+                                    const struct stat *containerStat,
+                                    const struct stat *cachesStat, const struct stat *tmpStat,
+                                    unsigned long long *cacheBytes, unsigned long long *tempBytes,
+                                    BOOL *cacheKnown, BOOL *tempKnown)
+{
+    NSDictionary *e = cache[container];
+    if (![e isKindOfClass:NSDictionary.class]) return NO;
+    NSTimeInterval savedAt = [e[@"savedAt"] doubleValue];
+    if (savedAt <= 0 || NSDate.date.timeIntervalSinceReferenceDate - savedAt > kCLMeasureCacheTTL) return NO;
+    if ([e[@"device"] longLongValue] != (long long)containerStat->st_dev ||
+        [e[@"inode"] unsignedLongLongValue] != containerStat->st_ino) return NO;
+    if ([e[@"cachesMtime"] longLongValue] != (long long)cachesStat->st_mtimespec.tv_sec ||
+        [e[@"cachesMtimeNs"] longValue] != cachesStat->st_mtimespec.tv_nsec ||
+        [e[@"cachesSize"] longLongValue] != (long long)cachesStat->st_size) return NO;
+    if ([e[@"tmpMtime"] longLongValue] != (long long)tmpStat->st_mtimespec.tv_sec ||
+        [e[@"tmpMtimeNs"] longValue] != tmpStat->st_mtimespec.tv_nsec ||
+        [e[@"tmpSize"] longLongValue] != (long long)tmpStat->st_size) return NO;
+    *cacheBytes = [e[@"cacheBytes"] unsignedLongLongValue];
+    *tempBytes = [e[@"tempBytes"] unsignedLongLongValue];
+    *cacheKnown = [e[@"cacheKnown"] boolValue];
+    *tempKnown = [e[@"tempKnown"] boolValue];
+    // Only fully-known measurements are ever stored (see the store call):
+    // a limited measurement must be retried next time, not replayed.
+    if (!*cacheKnown || !*tempKnown) return NO;
+    return YES;
+}
+
+static void cl_measure_cache_store(NSMutableDictionary *store, NSString *container,
+                                   const struct stat *containerStat,
+                                   const struct stat *cachesStat, const struct stat *tmpStat,
+                                   unsigned long long cacheBytes, unsigned long long tempBytes,
+                                   BOOL cacheKnown, BOOL tempKnown)
+{
+    store[container] = @{ @"device": @(containerStat->st_dev), @"inode": @(containerStat->st_ino),
+        @"cachesMtime": @(cachesStat->st_mtimespec.tv_sec), @"cachesMtimeNs": @(cachesStat->st_mtimespec.tv_nsec),
+        @"cachesSize": @(cachesStat->st_size),
+        @"tmpMtime": @(tmpStat->st_mtimespec.tv_sec), @"tmpMtimeNs": @(tmpStat->st_mtimespec.tv_nsec),
+        @"tmpSize": @(tmpStat->st_size),
+        @"cacheBytes": @(cacheBytes), @"tempBytes": @(tempBytes),
+        @"cacheKnown": @(cacheKnown), @"tempKnown": @(tempKnown),
+        @"savedAt": @(NSDate.date.timeIntervalSinceReferenceDate) };
 }
 
 static BOOL CLCacheRecordIdentityMatches(CLCacheTargetRecord *record, NSString **reason)
@@ -357,12 +439,39 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
 {
     cl_enumerate_invalidate();
     cl_display_names_reset_miss();
+    // Mark the store's last scan as stale, or Home's ensureScan (which
+    // skips scanning when lastScanFinished > 0) would never start a new
+    // scan after a refresh — the old power menu's "rescan" silently did
+    // nothing once any scan had finished (v2.2). `scanning` is left alone:
+    // a scan that is still running must still block a second one.
+    _lastScanFinished = 0;
 }
 
 @end
 
 @interface CLCacheScanner ()
 @property (nonatomic, strong) CLScanCancellation *cancellation;
+@end
+
+// Shared state for one scan's parallel workers. The lock guards the items
+// list, the counters and the incremental-delivery bookkeeping; the measure
+// cache is loaded once (read-only) and new entries go through the same lock.
+@interface CLCacheScanContext : NSObject
+@property (nonatomic, strong) CLScanCancellation *cancellation;
+@property (nonatomic, copy) NSDictionary *measureCache;
+@property (nonatomic, strong) NSMutableDictionary *measureStore;
+@property (nonatomic, strong) NSLock *lock;
+@property (nonatomic, strong) NSMutableArray<CLCacheItem *> *items;
+@property (nonatomic) NSUInteger completedCount;
+@property (nonatomic) NSUInteger deliveredItemCount;
+@property (nonatomic) BOOL scanLimited;
+@property (nonatomic) NSUInteger limitedContainers;
+@property (nonatomic) NSUInteger limitedMeasurements;
+@property (nonatomic) NSUInteger missingIdentities;
+@property (nonatomic) NSUInteger measureCacheHits;
+@end
+
+@implementation CLCacheScanContext
 @end
 
 @implementation CLCacheScanner
@@ -375,29 +484,145 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
 - (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
                completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled))completion
 {
+    [self startWithProgress:progress itemsUpdate:nil completion:completion];
+}
+
+// Measures one container (grant + Caches/tmp sizes + identity). Returns the
+// item, or nil when it is too small to list (both known, under 64 KB) or the
+// scan was cancelled. Updates the context counters under the context lock.
+// Runs on one of the scan's 4 worker threads; every call it makes is
+// thread-safe (cl_grant takes the grant lock, the name lookups take the LS
+// lock, the safety checks are pure stat calls, the measure cache is
+// read-only here and new entries are stored under the lock).
+- (CLCacheItem *)scanOneContainer:(NSString *)c context:(CLCacheScanContext *)ctx
+{
+    CLScanCancellation *cancellation = ctx.cancellation;
+    if (cancellation.isCancelled) return nil;
+    NSString *caches = [c stringByAppendingPathComponent:@"Library/Caches"];
+    NSString *tmp = [c stringByAppendingPathComponent:@"tmp"];
+    // One ancestry walk for the container + both targets (v2.2), instead of
+    // the three walks the two single-target checks used to do.
+    BOOL safeCaches = NO, safeTmp = NO;
+    BOOL safeContainer = CLSafetyContainerTargetsSafe(c, caches, @"Library/Caches", &safeCaches,
+                                                         tmp, @"tmp", &safeTmp);
+    BOOL granted = safeContainer && cl_grant(c);  // one token for the whole container
+    // Stat everything once up front: the container identity, both targets
+    // (for the measure cache and the target records) — no re-stat later.
+    struct stat containerStat = {0};
+    BOOL containerKnown = cl_stat(c, &containerStat) && S_ISDIR(containerStat.st_mode);
+    struct stat cachesStat = {0}, tmpStat = {0};
+    CLCachePathState cachesState = CLCacheInspectPath(caches, &cachesStat);
+    CLCachePathState tmpState = CLCacheInspectPath(tmp, &tmpStat);
+    unsigned long long cacheBytes = 0, tempBytes = 0;
+    BOOL cacheKnown = NO, tempKnown = NO;
+    BOOL fromCache = NO;
+    if (containerKnown && cachesState == CLCachePathExisting && tmpState == CLCachePathExisting) {
+        fromCache = cl_measure_cache_lookup(ctx.measureCache, c, &containerStat, &cachesStat, &tmpStat,
+                                            &cacheBytes, &tempBytes, &cacheKnown, &tempKnown);
+    }
+    CLCacheMeasurementState cacheState, tempState;
+    if (fromCache) {
+        cacheState = CLCacheMeasurementKnown;
+        tempState = CLCacheMeasurementKnown;
+        [ctx.lock lock];
+        ctx.measureCacheHits++;
+        [ctx.lock unlock];
+    } else {
+        cacheState = granted && safeCaches
+            ? CLCacheMeasureDirectory(caches, cancellation, &cacheBytes)
+            : CLCacheMeasurementLimited;
+        if (cacheState == CLCacheMeasurementCancelled) return nil;
+        tempState = granted && safeTmp
+            ? CLCacheMeasureDirectory(tmp, cancellation, &tempBytes)
+            : CLCacheMeasurementLimited;
+        if (tempState == CLCacheMeasurementCancelled) return nil;
+        cacheKnown = cacheState != CLCacheMeasurementLimited;
+        tempKnown = tempState != CLCacheMeasurementLimited;
+        // Only fully-known measurements are cached: a limited one must be
+        // retried on the next scan, not replayed from the cache.
+        if (cacheKnown && tempKnown && containerKnown &&
+            cachesState == CLCachePathExisting && tmpState == CLCachePathExisting) {
+            [ctx.lock lock];
+            cl_measure_cache_store(ctx.measureStore, c, &containerStat, &cachesStat, &tmpStat,
+                                   cacheBytes, tempBytes, cacheKnown, tempKnown);
+            [ctx.lock unlock];
+        }
+    }
+    [ctx.lock lock];
+    if (!granted || !safeContainer) {
+        ctx.scanLimited = YES;
+        ctx.limitedContainers++;
+        cl_log(@"cache scan: %@ (%@) %@", c.lastPathComponent, cl_bundle_id_for_container(c) ?: @"未知应用",
+               safeContainer ? @"拒绝访问" : @"未通过路径安全检查");
+    }
+    if (!cacheKnown || !tempKnown) {
+        ctx.scanLimited = YES;
+        ctx.limitedMeasurements++;
+    }
+    [ctx.lock unlock];
+    if (cacheKnown && tempKnown && cacheBytes + tempBytes < 64 * 1024) return nil;
+    CLCacheItem *item = [CLCacheItem new];
+    NSString *bid = granted ? cl_container_label(c) : nil;
+    item.bundleID = bid;
+    item.name = cl_display_name(bid) ?: bid ?: c.lastPathComponent;
+    item.targets = @[caches, tmp];
+    item.cacheBytes = cacheBytes;
+    item.tempBytes = tempBytes;
+    item.cacheKnown = cacheKnown;
+    item.tempKnown = tempKnown;
+    item.limited = !cacheKnown || !tempKnown;
+    item.containerPath = c;
+    item.targetRecords = @[
+        CLCacheTargetRecordForPathWithStat(caches, @"Library/Caches", cachesState, &cachesStat),
+        CLCacheTargetRecordForPathWithStat(tmp, @"tmp", tmpState, &tmpStat),
+    ];
+    if (containerKnown) {
+        item.containerIdentityKnown = YES;
+        item.containerDevice = containerStat.st_dev;
+        item.containerInode = containerStat.st_ino;
+        item.containerMode = containerStat.st_mode & S_IFMT;
+    }
+    if (!bid.length || !item.containerIdentityKnown) {
+        item.limited = YES;
+        [ctx.lock lock];
+        ctx.scanLimited = YES;
+        ctx.missingIdentities++;
+        [ctx.lock unlock];
+    }
+    item.selected = !item.limited;
+    return item;
+}
+
+- (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
+              itemsUpdate:(void (^_Nullable)(NSArray<CLCacheItem *> *newItems))itemsUpdate
+               completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled))completion
+{
     [self cancel];
     CLScanCancellation *cancellation = [CLScanCancellation new];
     _cancellation = cancellation;
-#define CL_SCAN_CANCELLED() do { if (cancellation.isCancelled) { if (completion) completion(nil, scanLimited, @"扫描已取消。", YES); return; } } while (0)
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSMutableArray<CLCacheItem *> *items = [NSMutableArray new];
+        CLCacheScanContext *ctx = [CLCacheScanContext new];
+        ctx.cancellation = cancellation;
+        ctx.lock = [NSLock new];
+        ctx.items = [NSMutableArray new];
+        ctx.measureStore = [NSMutableDictionary new];
+        NSString *cachePath = cl_measure_cache_path();
+        NSDictionary *loaded = cachePath ? [NSDictionary dictionaryWithContentsOfFile:cachePath] : nil;
+        ctx.measureCache = [loaded isKindOfClass:NSDictionary.class] ? loaded : @{};
         NSMutableArray<NSString *> *emptyRoots = [NSMutableArray new];
-        BOOL scanLimited = NO;
         NSUInteger failedEnumerations = 0;
-        NSUInteger limitedContainers = 0;
-        NSUInteger limitedMeasurements = 0;
-        NSUInteger missingIdentities = 0;
+        CFAbsoluteTime scanStarted = CFAbsoluteTimeGetCurrent();
         NSArray *roots = @[@"/private/var/mobile/Containers/Data/Application",
                            @"/private/var/mobile/Containers/Data/PluginKitPlugin"];
         for (NSString *root in roots) {
-            CL_SCAN_CANCELLED();
+            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES); return; }
             NSString *kind = [root.lastPathComponent isEqualToString:@"Application"] ? @"应用" : @"扩展";
             NSArray *containers = cl_enumerate(root, 0, cancellation, ^(int64_t done, int64_t total, NSUInteger __unused f) {
                 if (progress) progress([NSString stringWithFormat:@"正在查找%@… %lld%%", kind, (long long)(done * 100 / (total ?: 1))]);
             });
             if (!containers) {
-                CL_SCAN_CANCELLED();
-                scanLimited = YES;
+                if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES); return; }
+                ctx.scanLimited = YES;
                 failedEnumerations++;
                 cl_log(@"cache scan: %@ container enumeration failed", kind);
                 continue;
@@ -407,70 +632,50 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
                 cl_load_display_names();
             }
             if (!containers.count) [emptyRoots addObject:kind];
-            NSUInteger idx = 0;
-            for (NSString *c in containers) {
-                CL_SCAN_CANCELLED();
-                idx++;
-                if ((idx % 10 == 0 || idx == containers.count) && progress) {
-                    progress([NSString stringWithFormat:@"正在测量%@ %lu/%lu…", kind,
-                              (unsigned long)idx, (unsigned long)containers.count]);
+            // Parallel measurement (v2.2): 4 strided workers, not one
+            // container at a time. dispatch_apply(4, ...) bounds the
+            // concurrency — a plain dispatch_apply over all containers
+            // would happily run 114 threads. Each worker measures its
+            // slice (grant + two tree walks, or a measurement-cache hit)
+            // and appends finished items under the context lock.
+            NSUInteger total = containers.count;
+            NSUInteger baseCompleted = ctx.completedCount;
+            // Per-root delivery counter (doneInRoot restarts at 1 for the
+            // second root, so this must restart too — otherwise the
+            // subtraction below underflows and every item delivers a batch).
+            __block NSUInteger deliveredCompleted = 0;
+            dispatch_apply(4, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t w) {
+                for (NSUInteger idx = w; idx < total; idx += 4) {
+                    if (cancellation.isCancelled) return;
+                    CLCacheItem *item = [self scanOneContainer:containers[idx] context:ctx];
+                    NSArray<CLCacheItem *> *batch = nil;
+                    [ctx.lock lock];
+                    if (item) [ctx.items addObject:item];
+                    ctx.completedCount++;
+                    NSUInteger doneInRoot = ctx.completedCount - baseCompleted;
+                    // Deliver finished rows in batches of 8 (sorted by
+                    // size inside the batch) so the list fills in while
+                    // the scan runs; the final completion re-sorts all.
+                    if (itemsUpdate && ctx.items.count > ctx.deliveredItemCount &&
+                        (doneInRoot - deliveredCompleted >= 8 || doneInRoot == total)) {
+                        batch = [[ctx.items subarrayWithRange:NSMakeRange(ctx.deliveredItemCount,
+                                                                          ctx.items.count - ctx.deliveredItemCount)]
+                                 sortedArrayUsingComparator:^NSComparisonResult(CLCacheItem *a, CLCacheItem *b) {
+                            return a.bytes > b.bytes ? NSOrderedAscending : (a.bytes < b.bytes ? NSOrderedDescending : NSOrderedSame);
+                        }];
+                        ctx.deliveredItemCount = ctx.items.count;
+                        deliveredCompleted = doneInRoot;
+                    }
+                    [ctx.lock unlock];
+                    if (batch.count) itemsUpdate(batch);
+                    if (progress && (doneInRoot % 10 == 0 || doneInRoot == total)) {
+                        progress([NSString stringWithFormat:@"正在测量%@ %lu/%lu…", kind,
+                                  (unsigned long)doneInRoot, (unsigned long)total]);
+                    }
                 }
-                BOOL safeContainer = CLSafetyHasNoSymlinkAncestry(c, NO);
-                BOOL granted = safeContainer && cl_grant(c);  // one token for the whole container
-                NSString *caches = [c stringByAppendingPathComponent:@"Library/Caches"];
-                NSString *tmp = [c stringByAppendingPathComponent:@"tmp"];
-                unsigned long long cacheBytes = 0, tempBytes = 0;
-                BOOL safeCaches = safeContainer &&
-                    CLSafetyTargetMatchesContainer(caches, c, @"Library/Caches");
-                BOOL safeTmp = safeContainer &&
-                    CLSafetyTargetMatchesContainer(tmp, c, @"tmp");
-                CLCacheMeasurementState cacheState = granted && safeCaches
-                    ? CLCacheMeasureDirectory(caches, cancellation, &cacheBytes)
-                    : CLCacheMeasurementLimited;
-                if (cacheState == CLCacheMeasurementCancelled) { if (completion) completion(nil, scanLimited, @"扫描已取消。", YES); return; }
-                CLCacheMeasurementState tempState = granted && safeTmp
-                    ? CLCacheMeasureDirectory(tmp, cancellation, &tempBytes)
-                    : CLCacheMeasurementLimited;
-                if (tempState == CLCacheMeasurementCancelled) { if (completion) completion(nil, scanLimited, @"扫描已取消。", YES); return; }
-                if (!granted || !safeContainer) {
-                    scanLimited = YES;
-                    limitedContainers++;
-                    cl_log(@"cache scan: %@ (%@) %@", c.lastPathComponent, cl_bundle_id_for_container(c) ?: @"未知应用",
-                           safeContainer ? @"拒绝访问" : @"未通过路径安全检查");
-                }
-                if (cacheState == CLCacheMeasurementLimited || tempState == CLCacheMeasurementLimited) {
-                    scanLimited = YES;
-                    limitedMeasurements++;
-                }
-                BOOL cacheKnown = cacheState != CLCacheMeasurementLimited;
-                BOOL tempKnown = tempState != CLCacheMeasurementLimited;
-                if (cacheKnown && tempKnown && cacheBytes + tempBytes < 64 * 1024) continue;
-                CLCacheItem *item = [CLCacheItem new];
-                NSString *bid = granted ? cl_container_label(c) : nil;
-                item.bundleID = bid;
-                item.name = cl_display_name(bid) ?: bid ?: c.lastPathComponent;
-                item.targets = @[caches, tmp];
-                item.cacheBytes = cacheBytes;
-                item.tempBytes = tempBytes;
-                item.cacheKnown = cacheKnown;
-                item.tempKnown = tempKnown;
-                item.limited = !cacheKnown || !tempKnown;
-                item.containerPath = c;
-                item.targetRecords = @[
-                    CLCacheTargetRecordForPath(caches, @"Library/Caches"),
-                    CLCacheTargetRecordForPath(tmp, @"tmp"),
-                ];
-                CLCacheCaptureContainerIdentity(item);
-                if (!bid.length || !item.containerIdentityKnown) {
-                    item.limited = YES;
-                    scanLimited = YES;
-                    missingIdentities++;
-                }
-                item.selected = !item.limited;
-                [items addObject:item];
-            }
+            });
+            if (cancellation.isCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES); return; }
         }
-        CL_SCAN_CANCELLED();
         unsigned long long crash = 0;
         // Crash logs are in a system group, which worse_query reaches on iOS 27
         // only. On iOS 26 the section is left out instead of reported as limited.
@@ -479,10 +684,10 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
         CLCacheMeasurementState crashState = !crashReachable ? CLCacheMeasurementMissing
             : safeCrashPath ? CLCacheMeasureDirectory(CLCrashLogsPath, cancellation, &crash)
                             : CLCacheMeasurementLimited;
-        if (crashState == CLCacheMeasurementCancelled) { if (completion) completion(nil, scanLimited, @"扫描已取消。", YES); return; }
+        if (crashState == CLCacheMeasurementCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES); return; }
         if (crashState == CLCacheMeasurementLimited) {
-            scanLimited = YES;
-            limitedMeasurements++;
+            ctx.scanLimited = YES;
+            ctx.limitedMeasurements++;
         }
         if (crashState == CLCacheMeasurementLimited || crash > 0) {
             CLCacheItem *logs = [CLCacheItem new];
@@ -494,34 +699,46 @@ NSString *const CLCacheStoreDidUpdateNotification = @"CLCacheStoreDidUpdateNotif
             logs.limited = crashState == CLCacheMeasurementLimited;
             logs.targetRecords = @[CLCacheTargetRecordForPath(CLCrashLogsPath, nil)];
             logs.selected = !logs.limited;
-            [items addObject:logs];
+            [ctx.items addObject:logs];
         }
-        [items sortUsingComparator:^NSComparisonResult(CLCacheItem *a, CLCacheItem *b) {
+        [ctx.items sortUsingComparator:^NSComparisonResult(CLCacheItem *a, CLCacheItem *b) {
             return a.bytes > b.bytes ? NSOrderedAscending : (a.bytes < b.bytes ? NSOrderedDescending : NSOrderedSame);
         }];
         NSMutableArray<NSString *> *notes = [NSMutableArray new];
         if (failedEnumerations) {
             [notes addObject:[NSString stringWithFormat:@"%lu 个容器枚举失败", (unsigned long)failedEnumerations]];
         }
-        if (limitedContainers) {
-            [notes addObject:[NSString stringWithFormat:@"%lu 个容器访问受限", (unsigned long)limitedContainers]];
+        if (ctx.limitedContainers) {
+            [notes addObject:[NSString stringWithFormat:@"%lu 个容器访问受限", (unsigned long)ctx.limitedContainers]];
         }
-        if (limitedMeasurements) {
-            [notes addObject:[NSString stringWithFormat:@"%lu 个缓存目录测量受限", (unsigned long)limitedMeasurements]];
+        if (ctx.limitedMeasurements) {
+            [notes addObject:[NSString stringWithFormat:@"%lu 个缓存目录测量受限", (unsigned long)ctx.limitedMeasurements]];
         }
-        if (missingIdentities) {
-            [notes addObject:[NSString stringWithFormat:@"%lu 个容器没有标识或身份信息", (unsigned long)missingIdentities]];
+        if (ctx.missingIdentities) {
+            [notes addObject:[NSString stringWithFormat:@"%lu 个容器没有标识或身份信息", (unsigned long)ctx.missingIdentities]];
         }
         NSString *note = nil;
-        if (scanLimited) {
+        if (ctx.scanLimited) {
             [notes addObject:@"受限行已排除，其余行仍可清理"];
             note = [NSString stringWithFormat:@"扫描不完整：%@。详见日志。", [notes componentsJoinedByString:@"；"]];
         } else if (emptyRoots.count) {
             note = [NSString stringWithFormat:@"没有找到%@容器。", [emptyRoots componentsJoinedByString:@" 或 "]];
         }
-        if (completion) completion(items, scanLimited, note, NO);
+        // Persist the new measurements for the next scan (only the entries
+        // measured this time; the file is capped so it never grows without
+        // bound — over the cap only this scan's entries are kept).
+        if (ctx.measureStore.count && cachePath) {
+            NSMutableDictionary *merged = [ctx.measureCache mutableCopy] ?: [NSMutableDictionary new];
+            [merged addEntriesFromDictionary:ctx.measureStore];
+            if (merged.count > 1024) merged = [ctx.measureStore mutableCopy];
+            if (![merged writeToFile:cachePath atomically:YES])
+                cl_log(@"cache scan: cannot save the measurement cache to %@", cachePath);
+        }
+        cl_log(@"cache scan: %lu items in %.1f s (%lu from the measurement cache)",
+               (unsigned long)ctx.items.count, CFAbsoluteTimeGetCurrent() - scanStarted,
+               (unsigned long)ctx.measureCacheHits);
+        if (completion) completion([ctx.items copy], ctx.scanLimited, note, NO);
     });
-#undef CL_SCAN_CANCELLED
 }
 
 @end

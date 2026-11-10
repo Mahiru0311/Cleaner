@@ -68,36 +68,57 @@ static NSData *cl_icon_fingerprint(UIImage *img)
     return [NSData dataWithBytes:px length:sizeof(px)];
 }
 
-static UIImage *cl_raw_icon(NSString *bundleID)
+// Device scale, cached once from the foreground scene. Lists warm icons
+// from background queues, where the scene walk is unavailable — the old code
+// then fell back to 2.0 and asked iOS for a 120px icon on a 3x phone.
+// iPhone 17 Pro Max is 3x; default to 3.0 so a background load still gets
+// the largest icon (180px for the 60pt format).
+static CGFloat cl_device_scale(void)
 {
-    if (![UIImage respondsToSelector:@selector(_applicationIconImageForBundleIdentifier:format:scale:)]) return nil;
-    CGFloat scale = 2.0; // Safe fallback for background preparation without UI context.
-    if (NSThread.isMainThread) {
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if ([scene isKindOfClass:UIWindowScene.class] && scene.activationState == UISceneActivationStateForegroundActive) {
-                scale = ((UIWindowScene *)scene).screen.scale;
-                break;
+    static CGFloat scale = 0;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        scale = 3.0;
+        if (NSThread.isMainThread) {
+            for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+                if ([scene isKindOfClass:UIWindowScene.class] && scene.activationState == UISceneActivationStateForegroundActive) {
+                    scale = ((UIWindowScene *)scene).screen.scale;
+                    break;
+                }
             }
         }
-    }
-    return [UIImage _applicationIconImageForBundleIdentifier:bundleID format:2 scale:scale];
+    });
+    return scale;
+}
+
+static UIImage *cl_raw_icon_format(NSString *bundleID, int format)
+{
+    if (![UIImage respondsToSelector:@selector(_applicationIconImageForBundleIdentifier:format:scale:)]) return nil;
+    return [UIImage _applicationIconImageForBundleIdentifier:bundleID format:format scale:cl_device_scale()];
 }
 
 // The real icon for bundleID, or nil when iOS only has its placeholder.
+// Format 2 is the 60pt icon (180px @3x). On some releases iOS hands out the
+// placeholder for one format but a real icon for another, so the formats are
+// tried largest-first before giving up to the bundle fallback.
 static UIImage *cl_real_icon(NSString *bundleID)
 {
     static NSData *placeholder;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ placeholder = cl_icon_fingerprint(cl_raw_icon(@"com.mahiru.cleaner.no-such-app")); });
-    UIImage *raw = cl_raw_icon(bundleID);
-    if (!raw || !raw.CGImage) return nil;
-    NSData *fp = cl_icon_fingerprint(raw);
-    if (!placeholder || fp.length != placeholder.length) return raw;
-    // Near-identical to the placeholder (allow small rendering differences).
-    const uint8_t *a = fp.bytes, *b = placeholder.bytes;
-    unsigned long diff = 0;
-    for (NSUInteger i = 0; i < fp.length; i++) diff += (unsigned long)abs((int)a[i] - (int)b[i]);
-    return diff / fp.length < 8 ? nil : raw;
+    dispatch_once(&once, ^{ placeholder = cl_icon_fingerprint(cl_raw_icon_format(@"com.mahiru.cleaner.no-such-app", 2)); });
+    static const int formats[] = {2, 3, 1, 0, 4};
+    for (size_t i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
+        UIImage *raw = cl_raw_icon_format(bundleID, formats[i]);
+        if (!raw || !raw.CGImage) continue;
+        NSData *fp = cl_icon_fingerprint(raw);
+        if (!placeholder || fp.length != placeholder.length) return raw;
+        // Near-identical to the placeholder (allow small rendering differences).
+        const uint8_t *a = fp.bytes, *b = placeholder.bytes;
+        unsigned long diff = 0;
+        for (NSUInteger j = 0; j < fp.length; j++) diff += (unsigned long)abs((int)a[j] - (int)b[j]);
+        if (diff / fp.length >= 8) return raw;
+    }
+    return nil;
 }
 
 // The icon from the app's own bundle, for when iOS only hands out its
@@ -134,14 +155,46 @@ static UIImage *cl_bundle_icon(NSString *bundleID)
     return nil;
 }
 
+// Filza-style app icon: the app's REAL icon at its native resolution,
+// cropped to a square (aspect-fill, never stretched) and masked with the
+// iOS continuous squircle — the same curve SpringBoard uses (CALayer
+// cornerCurve = continuous, radius 22.37% of the side). The old code drew
+// the icon into a fixed 40pt bitmap with a plain UIBezierPath rounded rect
+// (circular arcs, not a squircle) and stretched non-square sources into a
+// square — that is what made the icons look soft and wrong next to Filza.
+// The output keeps the source's pixel size (180px for a 60pt@3x icon) so
+// the 36pt rows downscale from full resolution instead of upscaling a
+// 40pt thumbnail.
 static UIImage *cl_round_icon(UIImage *raw)
 {
-    CGFloat s = 40;
-    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(s, s)];
-    return [r imageWithActions:^(UIGraphicsImageRendererContext *__unused ctx) {
-        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, s, s) cornerRadius:s * 0.225] addClip];
-        [raw drawInRect:CGRectMake(0, 0, s, s)];
+    if (!raw || !raw.CGImage) return raw;
+    CGFloat scale = raw.scale > 0 ? raw.scale : cl_device_scale();
+    CGFloat side = MIN(raw.size.width, raw.size.height);
+    if (side <= 0) return raw;
+    // Aspect-fill center crop: the largest centered square of the source.
+    CGFloat px = raw.size.width * scale, py = raw.size.height * scale;
+    CGFloat crop = MIN(px, py);
+    CGRect sourceRect = CGRectMake((px - crop) / 2, (py - crop) / 2, crop, crop);
+    CGImageRef cropped = CGImageCreateWithImageInRect(raw.CGImage, sourceRect);
+    if (!cropped) return raw;
+    CALayer *layer = [CALayer layer];
+    layer.frame = CGRectMake(0, 0, side, side);
+    layer.contents = (__bridge id)cropped;
+    // Without this the layer renders its contents at 1x into the 3x context
+    // and the icon comes out blurry — the whole point of this rewrite.
+    layer.contentsScale = scale;
+    layer.contentsGravity = kCAGravityResizeAspectFill;
+    layer.cornerRadius = side * 0.2237;
+    layer.cornerCurve = kCACornerCurveContinuous;
+    layer.masksToBounds = YES;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = scale;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side) format:format];
+    UIImage *out = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [layer renderInContext:ctx.CGContext];
     }];
+    CGImageRelease(cropped);
+    return out;
 }
 
 // Symbol tile for system services and extensions that have no icon at all,
@@ -214,17 +267,23 @@ static UIImage *cl_service_tile(NSString *bundleID)
     NSString *cacheKey = [symbol stringByAppendingString:color.description];
     UIImage *tile = [tiles objectForKey:cacheKey];
     if (tile) return tile;
-    CGFloat s = 40;
-    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(s, s)];
+    // Draw the tile square and unrounded, then mask it with the same
+    // continuous squircle as real icons (cl_round_icon) — one curve
+    // everywhere, instead of the old plain rounded rect here.
+    CGFloat s = 60;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = cl_device_scale();
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(s, s) format:format];
     UIColor *fill = [color resolvedColorWithTraitCollection:[UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleLight]];
-    tile = [r imageWithActions:^(UIGraphicsImageRendererContext *__unused ctx) {
+    UIImage *square = [r imageWithActions:^(UIGraphicsImageRendererContext *__unused ctx) {
         [fill setFill];
-        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, s, s) cornerRadius:s * 0.225] fill];
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:19 weight:UIImageSymbolWeightSemibold];
+        UIRectFill(CGRectMake(0, 0, s, s));
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:28 weight:UIImageSymbolWeightSemibold];
         UIImage *g = [[UIImage systemImageNamed:symbol withConfiguration:cfg] ?: [UIImage systemImageNamed:@"gearshape.fill" withConfiguration:cfg]
                       imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
         [g drawInRect:CGRectMake((s - g.size.width) / 2, (s - g.size.height) / 2, g.size.width, g.size.height)];
     }];
+    tile = cl_round_icon(square);
     [tiles setObject:tile forKey:cacheKey];
     return tile;
 }

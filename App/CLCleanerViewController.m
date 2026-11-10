@@ -315,11 +315,26 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
     [self updateButtons];
     [self setStatus:@"正在查找应用…"];
     __weak typeof(self) weakSelf = self;
+    // v2.2: incremental results — finished rows appear in batches of 8
+    // while the scan runs (merged, re-sorted, reloaded); the final
+    // completion below still delivers the complete list as authoritative.
     [_scanner startWithProgress:^(NSString *status) {
         dispatch_async(dispatch_get_main_queue(), ^{
             typeof(self) strongSelf = weakSelf;
             if (!strongSelf || generation != strongSelf->_scanGeneration) return;
             [strongSelf setStatus:status];
+        });
+    } itemsUpdate:^(NSArray<CLCacheItem *> *newItems) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf || generation != strongSelf->_scanGeneration || strongSelf->_cleaning) return;
+            NSArray *merged = [(strongSelf->_items ?: @[]) arrayByAddingObjectsFromArray:newItems];
+            strongSelf->_items = [merged sortedArrayUsingComparator:^NSComparisonResult(CLCacheItem *a, CLCacheItem *b) {
+                return a.bytes > b.bytes ? NSOrderedAscending : (a.bytes < b.bytes ? NSOrderedDescending : NSOrderedSame);
+            }];
+            [strongSelf rebuildVisibleItems];
+            [strongSelf.tableView reloadData];
+            [strongSelf updateButtons];
         });
     } completion:^(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled) {
         dispatch_async(dispatch_get_main_queue(), ^{

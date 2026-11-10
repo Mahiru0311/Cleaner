@@ -92,7 +92,8 @@ extern NSString *const CLCacheStoreDidUpdateNotification;
 @property (nonatomic) BOOL scanning;
 + (instancetype)shared;
 - (void)updateWithItems:(NSArray<CLCacheItem *> *)items limited:(BOOL)limited;
-// Forget the shared container scan + name database, so the next scan is fresh.
+// Forget the shared container scan + name database, and mark the store's
+// last scan as stale, so the next scan is fresh.
 - (void)invalidateScan;
 @end
 
@@ -104,6 +105,15 @@ extern NSString *const CLCacheStoreDidUpdateNotification;
 @interface CLCacheScanner : NSObject
 // progress is optional (Home passes nil; all call sites nil-check it).
 - (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
+               completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled))completion;
+// Same scan, but finished items are also delivered in batches (sorted by
+// size, largest first) as soon as they are measured, so rows appear while
+// the scan is still running instead of all at once at the end. itemsUpdate
+// is optional (nil = behave exactly like startWithProgress:completion:).
+// Batches are a preview: the final completion still delivers the complete,
+// fully sorted list, which the caller treats as authoritative.
+- (void)startWithProgress:(void (^_Nullable)(NSString *status))progress
+              itemsUpdate:(void (^_Nullable)(NSArray<CLCacheItem *> *newItems))itemsUpdate
                completion:(void (^)(NSArray<CLCacheItem *> *items, BOOL limited, NSString *note, BOOL cancelled))completion;
 - (void)cancel;
 @end

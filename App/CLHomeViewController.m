@@ -2,10 +2,12 @@
 //  CLHomeViewController.m
 //  Cleaner v2 — Home, 1:1 replica of KernelSU v3.2.5 (Miuix) home, copy changed.
 //  Layout (see HomeMiuix.kt StatusCard + the reference screenshot):
-//  light-grey background, power icon top right, huge bold title, green status
-//  card left (#DFFAE4, 110pt check circle offset (27, 31), #36D167) + two
+//  light-grey background, huge bold title, green status card left (#DFFAE4,
+//  88pt check circle INSIDE the card's bottom-right corner, #36D167) + two
 //  white mini cards right, one white info card, standard UITabBarController
 //  (iOS 26 native Liquid Glass, owned by CLTabBarController since v2.1).
+//  v2.2: the power button is gone (it did nothing; rescan is pull-to-refresh
+//  now) and the check circle no longer overflows the card — see buildUI.
 //  No emoji anywhere; SF Symbols only.
 //
 
@@ -134,6 +136,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         ? [NSString stringWithFormat:@"%lu", (unsigned long)store.appCount] : @"–";
     self.reclaimableLabel.text = store.lastScanFinished > 0
         ? cl_size_text(store.totalBytes) : @"–";
+    [self.scrollView.refreshControl endRefreshing];
 }
 
 // The grant probe: App Group present, but can worse_query actually issue an
@@ -165,7 +168,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
 
 - (void)refreshStatus
 {
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.1";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.2";
     BOOL supported = cl_system_supported();
     BOOL hasGroup = cl_app_group() != nil;
     if (!supported) {
@@ -235,24 +238,21 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
 
 #pragma mark - Actions
 
-- (void)powerTapped
+// Pull-to-refresh rescan (the v2.0/v2.1 power button did this and nothing
+// else, so it was deleted in v2.2). Same work as the old power menu: forget
+// the shared scan + name database, re-run the grant probe, rescan.
+- (void)userRefresh
 {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"重新扫描" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
-        [[CLCacheStore shared] invalidateScan];
-        self.didStartScan = NO;
-        // Re-run the grant probe too: a re-sign may have fixed authorization.
-        self.probeStarted = NO;
-        self.probeDone = NO;
-        self.probeRestricted = NO;
-        [self refreshStatus];
-        [self ensureScan];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = self.view;
-    sheet.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width - 60, 60, 1, 1);
-    [self presentViewController:sheet animated:YES completion:nil];
+    [[CLCacheStore shared] invalidateScan];
+    self.didStartScan = NO;
+    self.probeStarted = NO;
+    self.probeDone = NO;
+    self.probeRestricted = NO;
+    [self refreshStatus];
+    [self ensureScan];
+    // The spinner stays until the scan reports back: refreshFromStore ends
+    // it when the store updates (ending it here would hide it the moment
+    // the scan starts).
 }
 
 - (void)statusCardTapped
@@ -361,47 +361,34 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         [scroll.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [scroll.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
     ]];
+    // Pull-to-refresh rescan (replaces the deleted power button, v2.2).
+    UIRefreshControl *refresh = [UIRefreshControl new];
+    [refresh addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
+    scroll.refreshControl = refresh;
 
+    // Home metrics (v2.2): 16pt side margins, 13pt gaps between cards.
     UIStackView *content = [UIStackView new];
     content.axis = UILayoutConstraintAxisVertical;
-    content.spacing = 12;
+    content.spacing = 13;
     content.translatesAutoresizingMaskIntoConstraints = NO;
     [scroll addSubview:content];
     [NSLayoutConstraint activateConstraints:@[
-        [content.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:12],
-        [content.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-12],
+        [content.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:16],
+        [content.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-16],
         [content.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:12],
         // v2.1: the system tab bar owns the bottom safe area now (the -110
         // was padding for the deleted floating capsule bar). 20pt of
         // breathing room is all the content needs; the last row scrolls
         // fully above the glass tab bar.
         [content.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-20],
-        [content.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-24],
+        [content.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-32],
     ]];
 
-    // Top row: power button, right aligned.
-    UIButton *power = [UIButton buttonWithType:UIButtonTypeSystem];
-    [power setImage:[UIImage systemImageNamed:@"power"] forState:UIControlStateNormal];
-    power.tintColor = UIColor.labelColor;
-    power.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
-    [power addTarget:self action:@selector(powerTapped) forControlEvents:UIControlEventTouchUpInside];
-    power.translatesAutoresizingMaskIntoConstraints = NO;
-    [NSLayoutConstraint activateConstraints:@[
-        [power.heightAnchor constraintEqualToConstant:44],
-    ]];
-    UIView *powerRow = [UIView new];
-    [powerRow addSubview:power];
-    [NSLayoutConstraint activateConstraints:@[
-        [power.trailingAnchor constraintEqualToAnchor:powerRow.trailingAnchor constant:-4],
-        [power.centerYAnchor constraintEqualToAnchor:powerRow.centerYAnchor],
-    ]];
-    [content addArrangedSubview:powerRow];
-
-    // Huge bold title.
+    // Huge bold title, left aligned (v2.2: the power button row is gone).
     UILabel *title = [self makeLabel:@"Cleaner" font:[UIFont systemFontOfSize:40 weight:UIFontWeightBold]
                                color:UIColor.labelColor];
     [content addArrangedSubview:title];
-    [content setCustomSpacing:12 afterView:title];
+    [content setCustomSpacing:13 afterView:title];
 
     // Warning card: only when something is wrong.
     UIView *warning = [UIView new];
@@ -438,7 +425,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     self.statusModeLabel = [self makeLabel:@"<App Group> [沙盒模式]" font:[UIFont systemFontOfSize:15 weight:UIFontWeightMedium]
                                      color:UIColor.labelColor];
     self.statusModeLabel.numberOfLines = 2;
-    self.statusVersionLabel = [self makeLabel:@"版本：0.2.1" font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
+    self.statusVersionLabel = [self makeLabel:@"版本：0.2.2" font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
                                         color:UIColor.labelColor];
     UIStackView *statusTexts = [[UIStackView alloc] initWithArrangedSubviews:@[
         self.statusTitleLabel, self.statusModeLabel, self.statusVersionLabel]];
@@ -451,17 +438,27 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         [statusTexts.trailingAnchor constraintEqualToAnchor:status.trailingAnchor constant:-16],
         [statusTexts.topAnchor constraintEqualToAnchor:status.topAnchor constant:14],
     ]];
-    // Huge check circle, overflowing bottom-right by (27, 31) — HomeMiuix.kt.
+    // Check circle, v2.2: FULLY INSIDE the green card, 88pt, 12pt inset from
+    // the right and bottom edges. KSU's original (110pt, offset +27/+31
+    // beyond the corner, HomeMiuix.kt) cannot work in this layout: the gap
+    // between the green card and the right column is 13pt, so any rightward
+    // overflow of 13pt or more intersects the white card — and the white
+    // card is drawn on top, so the circle's right half disappears under it
+    // (exactly what the v2.1 device screenshot showed). v2.1's 44pt gap
+    // below the row only fixed the VERTICAL collision with the info card,
+    // not this horizontal one. With the circle inside, its frame can never
+    // intersect any other card; it is also brought to the front of the row.
     self.statusIconView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark.circle"]];
     self.statusIconView.contentMode = UIViewContentModeScaleAspectFit;
     self.statusIconView.translatesAutoresizingMaskIntoConstraints = NO;
     [status addSubview:self.statusIconView];
     [NSLayoutConstraint activateConstraints:@[
-        [self.statusIconView.widthAnchor constraintEqualToConstant:110],
-        [self.statusIconView.heightAnchor constraintEqualToConstant:110],
-        [self.statusIconView.trailingAnchor constraintEqualToAnchor:status.trailingAnchor constant:27],
-        [self.statusIconView.bottomAnchor constraintEqualToAnchor:status.bottomAnchor constant:31],
+        [self.statusIconView.widthAnchor constraintEqualToConstant:88],
+        [self.statusIconView.heightAnchor constraintEqualToConstant:88],
+        [self.statusIconView.trailingAnchor constraintEqualToAnchor:status.trailingAnchor constant:-12],
+        [self.statusIconView.bottomAnchor constraintEqualToAnchor:status.bottomAnchor constant:-12],
     ]];
+    [status bringSubviewToFront:self.statusIconView];
     [status addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(statusCardTapped)]];
 
     self.appCountLabel = [UILabel new];
@@ -470,32 +467,32 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     UIView *cleanCard = [self makeMiniCardWithTitle:@"可清理" valueLabel:self.reclaimableLabel];
     UIStackView *rightColumn = [[UIStackView alloc] initWithArrangedSubviews:@[appsCard, cleanCard]];
     rightColumn.axis = UILayoutConstraintAxisVertical;
-    rightColumn.spacing = 12;
+    rightColumn.spacing = 13;
     rightColumn.distribution = UIStackViewDistributionFillEqually;
 
     UIStackView *statusRow = [[UIStackView alloc] initWithArrangedSubviews:@[status, rightColumn]];
     statusRow.axis = UILayoutConstraintAxisHorizontal;
-    statusRow.spacing = 12;
+    statusRow.spacing = 13;
     statusRow.alignment = UIStackViewAlignmentFill;
     [NSLayoutConstraint activateConstraints:@[
         [status.widthAnchor constraintEqualToAnchor:statusRow.widthAnchor multiplier:0.55],
-        // Minimum height: the three text lines end ~100pt from the top and
-        // the 110pt check circle starts at (height - 79); 200pt guarantees
-        // the text and the circle never collide (v2.1).
-        [status.heightAnchor constraintGreaterThanOrEqualToConstant:200],
+        // Minimum height: the three text lines end ~97pt from the top; the
+        // 88pt circle starts at (height - 100). 212pt leaves 15pt between
+        // the text and the circle. The row height is max(green, right
+        // column), so both sides end at the same bottom edge.
+        [status.heightAnchor constraintGreaterThanOrEqualToConstant:212],
     ]];
     [content addArrangedSubview:statusRow];
-    // The check circle overflows the green card's bottom edge by 31pt
-    // (HomeMiuix.kt offset). The gap to the info card must be wider than
-    // that overflow, or the circle lands on the next card — exactly what
-    // happened on the real device in v2.0 (12pt gap). 44pt leaves 13pt.
-    [content setCustomSpacing:44 afterView:statusRow];
+    [statusRow bringSubviewToFront:status];
+    // v2.2: no overflow any more, so the gap below the row is the standard
+    // 13pt (the v2.1 44pt was only there to clear the overflowing circle).
+    [content setCustomSpacing:13 afterView:statusRow];
 
     // Info card: one white rounded card, icon + bold title + grey value.
     UIView *info = [UIView new];
     info.backgroundColor = UIColor.systemBackgroundColor;
     info.layer.cornerRadius = 28;
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.1";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.2";
     NSString *build = NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"1";
     self.groupStatusValueLabel = [UILabel new];
     NSArray<UIView *> *rows = @[

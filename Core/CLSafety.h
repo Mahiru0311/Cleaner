@@ -75,6 +75,56 @@ static inline BOOL CLSafetyTargetMatchesContainer(NSString *target,
     return [canonicalTarget isEqualToString:canonicalExpected];
 }
 
+// Same checks as calling CLSafetyTargetMatchesContainer twice (once per
+// target), but the container ancestry is walked once instead of three times
+// and the canonical container is resolved once. The targets only need their
+// components below the container checked: the components above them are the
+// container's own, already validated. Returns whether the container itself
+// is safe; sets *safeA/*safeB per target (NO when that target is unsafe).
+// A missing final component is allowed for a target (same as the
+// allowMissingFinal=YES in the single-target check); a missing ancestor is
+// never accepted.
+static inline BOOL CLSafetyContainerTargetsSafe(NSString *container,
+                                                         NSString *targetA, NSString *relativeA, BOOL *safeA,
+                                                         NSString *targetB, NSString *relativeB, BOOL *safeB)
+{
+    if (safeA) *safeA = NO;
+    if (safeB) *safeB = NO;
+    for (NSString *relative in @[relativeA, relativeB]) {
+        if (!relative.length || relative.isAbsolutePath) return NO;
+        for (NSString *component in relative.pathComponents) {
+            if ([component isEqualToString:@"."] || [component isEqualToString:@".."]) return NO;
+        }
+    }
+    NSString *lexicalContainer = [container stringByStandardizingPath];
+    NSString *lexicalA = [[lexicalContainer stringByAppendingPathComponent:relativeA] stringByStandardizingPath];
+    NSString *lexicalB = [[lexicalContainer stringByAppendingPathComponent:relativeB] stringByStandardizingPath];
+    if (![[targetA stringByStandardizingPath] isEqualToString:lexicalA] ||
+        ![[targetB stringByStandardizingPath] isEqualToString:lexicalB]) return NO;
+    if (!CLSafetyHasNoSymlinkAncestry(container, NO)) return NO;
+    NSString *canonicalContainer = CLSafetyCanonicalPath(container);
+    BOOL (^checkTarget)(NSString *, NSString *) = ^BOOL(NSString *target, NSString *relative) {
+        // Only the components below the container: the rest were just checked.
+        NSString *prefix = [container stringByStandardizingPath];
+        NSArray<NSString *> *parts = relative.pathComponents;
+        for (NSUInteger i = 0; i < parts.count; i++) {
+            prefix = [prefix stringByAppendingPathComponent:parts[i]];
+            struct stat st = {0};
+            if (lstat(prefix.fileSystemRepresentation, &st) != 0) {
+                if (i == parts.count - 1 && errno == ENOENT) break;
+                return NO;
+            }
+            if (S_ISLNK(st.st_mode)) return NO;
+        }
+        NSString *canonicalTarget = CLSafetyCanonicalPath(target);
+        NSString *canonicalExpected = [canonicalContainer stringByAppendingPathComponent:relative];
+        return [canonicalTarget isEqualToString:canonicalExpected];
+    };
+    if (safeA) *safeA = checkTarget(targetA, relativeA);
+    if (safeB) *safeB = checkTarget(targetB, relativeB);
+    return YES;
+}
+
 // Portable implementation helpers for WQAccess; no privileged access is performed here.
 #import <Foundation/Foundation.h>
 #include <errno.h>

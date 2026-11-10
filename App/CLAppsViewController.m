@@ -7,6 +7,7 @@
 
 #import "CLAppsViewController.h"
 #import "CLApp.h"
+#import "CLAppDirectoryViewController.h"
 #import "CLAppSupport.h"
 #import "CLGrant.h"
 #import "CLScan.h"
@@ -280,7 +281,7 @@ static void CLAppScanWatch(CLScanCancellation *cancellation, NSUInteger lastSeri
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    return @"点一个应用可备份、恢复或清空它的 Documents 和 Library。请先关闭该应用（在应用切换器里划掉它）；运行时操作可能不一致。备份存在 Cleaner/AppBackups，在文件 App 里可见。tmp 清空时不备份、不恢复。";
+    return @"点一个应用进入它的目录，可在目录里备份、恢复或清空它的 Documents 和 Library。请先关闭该应用（在应用切换器里划掉它）；运行时操作可能不一致。备份存在 Cleaner/AppBackups，在文件 App 里可见。tmp 清空时不备份、不恢复。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -317,6 +318,11 @@ static void CLAppScanWatch(CLScanCancellation *cancellation, NSUInteger lastSeri
     return cell;
 }
 
+// v2.2: tap an app and go straight into its container directory.
+// Backup / restore / clear live inside the directory view (nav-bar actions
+// on the root level), not behind a sheet here. The old sheet (备份数据 /
+// 恢复备份 / 清空数据…) and its handlers moved to CLAppActions, which both
+// screens share.
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
@@ -341,126 +347,11 @@ static void CLAppScanWatch(CLScanCancellation *cancellation, NSUInteger lastSeri
         [self presentViewController:sheet animated:YES completion:nil];
         return;
     }
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:app.name
-        message:[NSString stringWithFormat:@"%@\n%@", app.bundleID,
-                 app.sizeKnown ? [NSString stringWithFormat:@"%@ 数据", cl_size_text(app.bytes)] : @"大小未知"]
-        preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"备份数据" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
-        [self backUp:app then:nil];
-    }]];
-    NSArray *backups = app.backups;
-    NSString *latest = backups.firstObject[@"path"];
-    if (latest) {
-        NSString *title = backups.count == 1 ? [NSString stringWithFormat:@"恢复备份（%@）", cl_backup_label(backups.firstObject)]
-                                             : [NSString stringWithFormat:@"恢复备份…（%lu）", (unsigned long)backups.count];
-        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
-            [self pickBackupToRestore:app from:[tableView cellForRowAtIndexPath:indexPath]];
-        }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"清空数据…" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
-        [self confirmClear:app];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
-    sheet.popoverPresentationController.sourceView = cell ?: self.view;
-    sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
-}
-
-- (void)finish:(NSString *)title message:(NSString *)message
-{
-    [self setBusy:NO status:nil];
-    cl_alert(self, title, message);
-    [self scan];
-}
-
-- (void)backUp:(CLAppItem *)app then:(void (^)(BOOL ok))next
-{
-    [self setBusy:YES status:[NSString stringWithFormat:@"正在备份 %@…", app.name]];
-    dispatch_async(cl_io(), ^{
-        NSString *error = nil;
-        NSString *dest = cl_make_app_backup(app.bundleID, app.container, app.containerDevice,
-                                             app.containerInode, nil, &error);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (next) { next(dest != nil); return; }
-            [self finish:dest ? @"已备份" : @"备份失败"
-                 message:dest ? [NSString stringWithFormat:@"已保存到 AppBackups/%@/%@", app.bundleID, dest.lastPathComponent]
-                              : [NSString stringWithFormat:@"什么都没保存：%@", error ?: @"详见日志"]];
-        });
-    });
-}
-
-// The clear itself lives in Core (cl_clear_app_data): validate the container
-// before every part, purge + verify each part, validate again at the end.
-// The VC only shows progress and the result.
-- (void)clear:(CLAppItem *)app
-{
-    [self setBusy:YES status:[NSString stringWithFormat:@"正在清理 %@…", app.name]];
-    dispatch_async(cl_io(), ^{
-        unsigned long long freed = 0;
-        NSString *error = nil;
-        BOOL ok = cl_clear_app_data(app, &freed, &error);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self finish:ok ? @"数据已清空" : @"部分清空"
-                 message:[NSString stringWithFormat:@"已释放约 %@。%@打开 %@ 重新开始。", cl_size_text(freed),
-                          ok ? @"" : [NSString stringWithFormat:@" %@。请保持应用关闭再试一次。", error ?: @"部分项目未能删除（详见日志）"], app.name]];
-        });
-    });
-}
-
-- (void)confirmClear:(CLAppItem *)app
-{
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"清空 %@？", app.name]
-        message:@"删除该应用 Documents、Library 和 tmp 里的全部内容，如同刚安装。可选备份只包含 Documents 和 Library；tmp 丢弃后无法恢复。登录信息、设置和离线内容都会丢失。请先关闭该应用。"
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"先备份再清空" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
-        [self backUp:app then:^(BOOL ok) {
-            if (ok) [self clear:app];
-            else [self finish:@"未清空" message:@"备份未完成，什么都没删。"];
-        }];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"直接清空，不备份" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
-        [self clear:app];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)pickBackupToRestore:(CLAppItem *)app from:(UIView *)source
-{
-    NSArray *backups = app.backups;
-    if (backups.count == 1) { [self confirmRestore:app from:backups.firstObject]; return; }
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"恢复哪个备份？" message:app.name
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    for (NSDictionary *__unused b in backups) {
-        [sheet addAction:[UIAlertAction actionWithTitle:cl_backup_label(b) style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction *__unused a) { [self confirmRestore:app from:b]; }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = source ?: self.view;
-    sheet.popoverPresentationController.sourceRect = (source ?: self.view).bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
-}
-
-- (void)confirmRestore:(CLAppItem *)app from:(NSDictionary *)backup
-{
-    NSString *path = backup[@"path"];
-    NSString *warning = [backup[@"verified"] boolValue] ? @""
-        : [NSString stringWithFormat:@"\n\n该备份未验证（%@）。Cleaner 会在修改前重新检查它的内容。",
-           backup[@"reason"] ?: @"没有类型化清单"];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"恢复 %@？", app.name]
-        message:[NSString stringWithFormat:@"用 %@ 的备份替换该应用当前的 Documents 和 Library；tmp 不动。当前数据会先备份，失败时放回。请先关闭该应用：运行中的应用可能导致操作不一致。%@",
-                 cl_backup_label(backup), warning]
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"恢复" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
-        [self setBusy:YES status:[NSString stringWithFormat:@"正在恢复 %@…", app.name]];
-        dispatch_async(cl_io(), ^{
-            NSString *title = nil, *message = nil;
-            cl_restore_app(app, path, &title, &message);
-            dispatch_async(dispatch_get_main_queue(), ^{ [self finish:title message:message]; });
-        });
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    CLAppDirectoryViewController *dir = [[CLAppDirectoryViewController alloc] initWithApp:app];
+    __weak typeof(self) weakSelf = self;
+    dir.onDataChanged = ^{
+        [weakSelf scan];
+    };
+    [self.navigationController pushViewController:dir animated:YES];
 }
 @end

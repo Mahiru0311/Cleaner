@@ -119,7 +119,6 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
         c.secondaryText = [rule[CLCustomRuleEnabledKey] boolValue] ? @"已启用" : @"已停用";
         UISwitch *sw = [UISwitch new];
         sw.on = [rule[CLCustomRuleEnabledKey] boolValue];
-        sw.tag = indexPath.row;
         [sw addTarget:self action:@selector(ruleSwitchChanged:) forControlEvents:UIControlEventValueChanged];
         cell.accessoryView = sw;
         cell.contentConfiguration = c;
@@ -217,15 +216,21 @@ typedef NS_ENUM(NSInteger, CLCustomSection) {
 
 - (void)ruleSwitchChanged:(UISwitch *)sw
 {
+    // Find the row from the cell, not from a tag: after a rule is deleted
+    // the rows below it shift, and a stored tag would point at the wrong
+    // rule (v2.3 fix before first device test).
+    UIView *v = sw;
+    while (v && ![v isKindOfClass:UITableViewCell.class]) v = v.superview;
+    NSIndexPath *ip = [self.tableView indexPathForCell:(UITableViewCell *)v];
+    if (!ip || (NSUInteger)ip.row >= _rules.count) return;
     NSMutableArray *rules = [_rules mutableCopy];
-    NSMutableDictionary *rule = [rules[(NSUInteger)sw.tag] mutableCopy];
+    NSMutableDictionary *rule = [rules[(NSUInteger)ip.row] mutableCopy];
     rule[CLCustomRuleEnabledKey] = @(sw.on);
-    rules[(NSUInteger)sw.tag] = rule;
+    rules[(NSUInteger)ip.row] = rule;
     cl_custom_clean_save_rules(rules);
     [self reloadModel];
     [self updateRunButton];
-    [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:sw.tag inSection:CLCustomSectionRules]]
-                          withRowAnimation:UITableViewRowAnimationNone];
+    [self.tableView reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone];
 }
 
 // Scanned apps for the app picker (bundleID + name), from the shared store.

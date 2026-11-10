@@ -101,7 +101,11 @@ struct CleanCacheIntent: AppIntent {
         // Record the run in the App Group before answering, so the
         // Settings guide can show what actually happened (including the
         // error case — a failed run is still a run).
-        var record: [String: Any] = [
+        // The ObjC function takes NSDictionary * — Swift imports that
+        // as [AnyHashable: Any], so the record is built in exactly that
+        // type and passed without a cast (an `as NSDictionary` cast does
+        // not convert to the parameter type; run 42831894691).
+        var record: [AnyHashable: Any] = [
             "freed": totalFreed, "customFreed": customFreed,
             "appsCleaned": appsCleaned, "appsRemaining": appsRemaining,
             "appsTotal": appsTotal, "failed": failed,
@@ -111,7 +115,7 @@ struct CleanCacheIntent: AppIntent {
             "headless": headless,
         ]
         if let error = error { record["error"] = error }
-        cl_intent_record_run(record as NSDictionary)
+        cl_intent_record_run(record)
         let sizeText = ByteCountFormatter.string(fromByteCount: Int64(totalFreed), countStyle: .file)
         if let error = error {
             return .result(dialog: "清理失败：\(error)")

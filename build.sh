@@ -65,10 +65,12 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 # background and runs perform() in-process, so the clean uses the same
 # sandbox grant, measurement cache and custom rules as the app itself.
 # -swift-version 5 keeps Swift 6 strict-concurrency diagnostics out of
-# the NSDictionary bridging; no -dead_strip risk here — main.m references
-# CLIntentsBootstrap, which references the intent types.
+# the NSDictionary bridging; -parse-as-library stops swiftc synthesising
+# a _main entry point for the file (it is library code — App/main.m owns
+# main, and without the flag the link fails on a duplicate _main).
+# no -dead_strip risk here — main.m references CLIntentsBootstrap, which references the intent types.
 xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -O -swift-version 5 \
-    -module-name CleanerIntents \
+    -parse-as-library -module-name CleanerIntents \
     -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
     -emit-objc-header-path "$OUT/CleanerIntents-Swift.h" \
     -I Core -c Intents/CleanerIntents.swift -o "$OUT/CleanerIntents.o"

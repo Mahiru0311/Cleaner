@@ -64,7 +64,7 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
     # (CleanerIntents-Swift.h) and the object linked into the app binary.
     # This also type-checks the Swift file on the macOS runner.
     xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$IOS_SDK" -O -swift-version 5 \
-        -module-name CleanerIntents \
+        -parse-as-library -module-name CleanerIntents \
         -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
         -emit-objc-header-path "$OUT/CleanerIntents-Swift.h" \
         -I Core -c Intents/CleanerIntents.swift -o "$OUT/CleanerIntents.o" > "$OUT/ios-swift.log" 2>&1 || {

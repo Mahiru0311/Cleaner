@@ -107,16 +107,32 @@ public final class CLIntentsBootstrap: NSObject {
 // metadata references and then the types and their protocol conformances
 // entirely — the v2.4 binary had no CleanCacheIntent / CleanerShortcuts
 // symbols at all (only the 8 CLIntentsBootstrap symbols), and the
-// Shortcuts app found nothing. Reading CleanerShortcuts.appShortcuts here
-// and returning the titles to a UIKit label is a genuine data flow the
-// optimizer cannot delete: the provider, its appShortcuts property, the
-// AppShortcut values and the CleanCacheIntent instances inside them must
-// all stay linked. Do not "simplify" this back to a keepAlive-only call.
+// Shortcuts app found nothing.
+// WARNING — the data flow alone was STILL not enough: the first v2.5 build
+// (run 42823044882) lost the types again, because -O constant-folded the
+// flow (appShortcuts is a literal 1-element array, the title is a
+// constant), so the references never reached the object file. What makes
+// the flow survive is @_optimize(none) on the two methods below, PLUS no
+// -dead_strip at link time (build.sh). Do not "simplify" this back to a
+// keepAlive-only call, and do not remove @_optimize(none).
 @objc(CLCleanerShortcutsInfo)
 public final class CLCleanerShortcutsInfo: NSObject {
+    // @_optimize(none) is load-bearing, not cosmetic — do not remove it.
+    // Without it, swiftc -O constant-folds these methods: appShortcuts is
+    // a literal 1-element array and CleanCacheIntent.title is a constant,
+    // so the optimizer proves the types are unneeded and eliminates them
+    // from the object file entirely (that is how v2.4 lost the intent, and
+    // how the first v2.5 build lost it again despite the "real data flow").
+    // With optimization off, the method bodies genuinely load the provider
+    // and the intent, so their metadata survives into the object file.
+    // validate_app still verifies the final binary — if a future Swift
+    // ignores this attribute, the build fails loudly instead of shipping
+    // a shortcut the Shortcuts app cannot see.
+    @_optimize(none)
     @objc public static var shortcutCount: Int {
         CleanerShortcuts.appShortcuts.count
     }
+    @_optimize(none)
     @objc public static var shortcutTitles: [String] {
         // AppShortcut does not expose shortTitle for reading (it is only
         // an initializer parameter), so the display title comes from the

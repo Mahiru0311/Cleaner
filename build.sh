@@ -83,6 +83,16 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 # cannot delete a flow that ends in a UIKit label. keepAlive is kept as
 # a belt-and-braces call, but it is NOT the protection. validate_app
 # below now checks the mangled symbols, not the bare names.
+# NOTE (v2.5, run 42823044882): the first v2.5 build STILL lost the types
+# even with that data flow — swiftc -O constant-folded it (appShortcuts is
+# a literal 1-element array, the title is a constant), so the references
+# never reached the object file. Two fixes: CLCleanerShortcutsInfo's methods
+# carry @_optimize(none) so the references survive swiftc, and the link no
+# longer uses -dead_strip at all (below) — it is the mechanism that removed
+# the types at link time, and the size it saves is not worth a shortcut the
+# Shortcuts app cannot see. -Os -flto stay. If the IPA grows past the 250KB
+# target, revisit — but do NOT re-add -dead_strip without re-verifying the
+# mangled symbols in the built binary.
 xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -O -swift-version 5 \
     -parse-as-library -module-name CleanerIntents \
     -import-objc-header Intents/CleanerIntents-Bridging-Header.h \
@@ -90,7 +100,7 @@ xcrun --sdk iphoneos swiftc -target arm64-apple-ios26.0 -sdk "$SDK" -O -swift-ve
     -I Core -c Intents/CleanerIntents.swift -o "$OUT/CleanerIntents.o"
 xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/ModuleCache" -arch arm64 \
     -miphoneos-version-min="$MINIMUM_IOS_VERSION" \
-    -isysroot "$SDK" -I Core -I App -I "$OUT" -Wall -Wextra -Werror -Os -flto -dead_strip \
+    -isysroot "$SDK" -I Core -I App -I "$OUT" -Wall -Wextra -Werror -Os -flto \
     -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers \
     -framework AppIntents \
     Core/CLGrant.m Core/CLScan.m Core/CLCache.m Core/CLApp.m Core/CLLaunchServices.m Core/CLCustomClean.m \

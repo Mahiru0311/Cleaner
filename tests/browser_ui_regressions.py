@@ -490,7 +490,12 @@ for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.
                "App/CLTabBarController.m", "App/main.m"):
     require(build, source, f"build source {source}")
 forbid(build, "WQCore.m", "v0.1 build source")
-require(build, "-Os -flto -dead_strip", "size optimisation flags")
+require(build, "-Os -flto", "size optimisation flags")
+# v2.5: -dead_strip is GONE from the link on purpose — it is the mechanism
+# that removed the intent types at link time in v2.4 (and the first v2.5
+# build still lost them until @_optimize(none) + no -dead_strip). Do not
+# re-add it without re-verifying the mangled symbols in the built binary.
+forbid(build, "-Os -flto -dead_strip", "dead-strip removed from the link")
 # v2.5: the strict check in run_all_tests.sh has its OWN source list — a
 # file in build.sh but not there links fine in build.sh and then fails the
 # preflight link with undefined symbols (CLRulePickerViewController /

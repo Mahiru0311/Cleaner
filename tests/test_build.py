@@ -29,8 +29,9 @@ if [ "$1" = "--sdk" ] && [ "$3" = "swiftc" ]; then
     printf 'fake swift object\n' > "$output"
     # v2.7: the const-values path lives in the output file map, not on
     # the command line; the fake writes it next to the object file with
-    # the same stem build.sh uses.
-    printf '{}\n' > "${output%.o}.swiftconstvalues"
+    # the same stem build.sh uses. The real file is a JSON array (empty
+    # is [], gathered is [{...}]) — probe 42861887088.
+    printf '[]\n' > "${output%.o}.swiftconstvalues"
     exit 0
 fi
 if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then
@@ -64,8 +65,11 @@ if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then
             # first word "Cleaner" becomes 0A). The fake must carry both
             # modules' symbols, or the fallback path's pre-strip check
             # would fail in the fake environment for the wrong reason.
+            # The witness spelling is module-dependent (probe 42861887088):
+            # 03appC0 for CleanerIntents, 03appB0 for Cleaner.
             printf '# %s\n' '$s7Cleaner16CleanCacheIntentV'
             printf '# %s\n' '$s7Cleaner0A9ShortcutsV'
+            printf '# %s\n' '0A9ShortcutsV03appB0'
             printf '# AppIntents linked\n'
             printf '\nexit 0\n'
         } > "$output"

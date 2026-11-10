@@ -566,20 +566,24 @@ require(build, "--toolchain-dir", "processor needs the toolchain dir (run 428570
 require(build, "TOOLCHAIN_DIR", "toolchain dir derived from the active developer dir")
 require(build, "check_appintents_metadata.py", "build validates the metadata package")
 require(build, "build_app_binary Cleaner", "fallback: recompile as the app module and retry")
+require(build, "03appC0", "CleanerIntents-module witness spelling (probe 42861887088)")
+require(build, "03appB0", "Cleaner-module witness spelling (probe 42861887088)")
 require(build, "extract_app_intents Cleaner", "fallback extraction for the app module")
 require(build, '"$APP/Metadata.appintents"', "metadata written into the .app before signing")
 require(build, '"$app_path/Metadata.appintents', "metadata checked on the extracted IPA")
 protocols = read(ROOT / "Intents" / "swift_const_gather_protocols.json")
-# Bare JSON array of "Module.Protocol" strings — the {"protocols": [...]}
-# object form is rejected by swift-frontend as malformed (run 42854024396);
-# probed on the runner, only the bare array parses (run 42855820431).
+# Bare JSON array of bare protocol NAMES — the {"protocols": [...]} object
+# form is rejected as malformed (run 42854024396), and "Module.Name"
+# strings parse but gather NOTHING (probe 42861887088: G1 [] vs G2 7876
+# bytes); only bare names make swiftc emit const values.
 _parsed_protocols = json.loads(protocols)
-if not isinstance(_parsed_protocols, list) or "AppIntents.AppIntent" not in _parsed_protocols:
-    raise AssertionError("protocols file must be a bare JSON array of Module.Protocol strings (probe 42855820431)")
+if not isinstance(_parsed_protocols, list) or "AppIntent" not in _parsed_protocols:
+    raise AssertionError("protocols file must be a bare JSON array of bare protocol names (probe 42861887088)")
 forbid(protocols, '"protocols"', "object wrapper rejected by swift-frontend (probe 42855820431)")
+forbid(protocols, "AppIntents.", "Module.Name entries parse but gather nothing (probe 42861887088)")
 forbid(protocols, "IntentResult", "IntentResult is a struct, not a protocol")
-require(protocols, "AppIntents.AppIntent", "AppIntent is gathered")
-require(protocols, "AppIntents.AppShortcutsProvider", "AppShortcutsProvider is gathered")
+require(protocols, '"AppIntent"', "AppIntent is gathered")
+require(protocols, '"AppShortcutsProvider"', "AppShortcutsProvider is gathered")
 validator = read(ROOT / "tests" / "check_appintents_metadata.py")
 require(validator, "CleanCacheIntent", "validator checks the intent")
 require(validator, "isDiscoverable", "validator checks discoverability")

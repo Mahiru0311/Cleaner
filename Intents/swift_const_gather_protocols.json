@@ -1,1 +1,1 @@
-["AppIntents.AppIntent","AppIntents.AppEntity","AppIntents.AppShortcutsProvider","AppIntents.EntityQuery","AppIntents.SnippetIntent","AppIntents.WidgetConfigurationIntent","AppIntents.ControlConfigurationIntent"]
+["AppIntent","AppEntity","AppShortcutsProvider","EntityQuery","SnippetIntent","WidgetConfigurationIntent","ControlConfigurationIntent"]

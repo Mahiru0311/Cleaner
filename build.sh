@@ -138,12 +138,13 @@ EOF
 # args (-Xfrontend eats exactly one argument, so a single -Xfrontend with
 # the path after it leaves the path as a positional input file —
 # run 42853045304 failed on exactly that). The protocols file is
-# Intents/swift_const_gather_protocols.json: a BARE JSON ARRAY of
-# "Module.Protocol" strings. The {"protocols": [...]} object form is
-# rejected by swift-frontend as malformed (run 42854024396); the bare
-# array is the accepted form, probed on the runner (run 42855820431:
-# bare array x8 and x7 PASS, object/strings/objects/version/map all
-# FAIL). After linking, BEFORE signing,
+# Intents/swift_const_gather_protocols.json: a BARE JSON ARRAY of bare
+# protocol NAMES (no "protocols" key, no "Module." prefix). The
+# {"protocols": [...]} object form is rejected by swift-frontend as
+# malformed (run 42854024396); "Module.Name" strings parse but gather
+# NOTHING (probe 42861887088: G1 [] vs G2 7876 bytes of const values) —
+# the compiler resolves each entry as a bare protocol name against the
+# imported modules. After linking, BEFORE signing,
 # appintentsmetadataprocessor turns them into .app/Metadata.appintents/
 # (extract.actionsdata + version.json). The one unknown is whether the
 # processor accepts the separate CleanerIntents module — if it extracts
@@ -200,20 +201,27 @@ xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/Modul
 # appShortcuts accessor, AppShortcutsProvider witnesses). "CleanCacheIntent"
 # is spelled out in full (16 chars) because "Clean" is not the word
 # "Cleaner", so no substitution applies to it.
-    # For the fallback module "Cleaner" (v2.7) the same substitution
-    # applies: $s7Cleaner0A9ShortcutsV and the same 0A9ShortcutsV03appC0
-    # witness ("Cleaner" is still the first word, so it still becomes 0A).
-    local prefix
+    # The appShortcuts witness spelling is MODULE-DEPENDENT (probe run
+    # 42861887088): the word-substitution index for "Shortcuts" is C0
+    # in CleanerIntents (words seen: Cleaner, Intents, Shortcuts) but B0
+    # in Cleaner (words seen: Cleaner, Shortcuts) — one fewer word, one
+    # lower index. The hardcoded 03appC0 grep passed for CleanerIntents
+    # but failed the fallback on every v2.7 build (runs 42857021899 /
+    # 42859520811); the real Cleaner-module getter is
+    # $s7Cleaner0A9ShortcutsV03appB0Say10AppIntents0D8ShortcutVGvgZ.
+    local prefix witness
     if [[ "$module" == "CleanerIntents" ]]; then
         prefix='[$]s14CleanerIntents'
+        witness='0A9ShortcutsV03appC0'
     else
         prefix='[$]s7Cleaner'
+        witness='0A9ShortcutsV03appB0'
     fi
     grep -aE -q "${prefix}16CleanCacheIntentV" "$APP/Cleaner" || \
         fail "linked binary is missing the CleanCacheIntent type (no mangled symbol)"
     grep -aE -q "${prefix}0A9ShortcutsV" "$APP/Cleaner" || \
         fail "linked binary is missing the CleanerShortcuts provider (no mangled symbol)"
-    grep -a -q '0A9ShortcutsV03appC0' "$APP/Cleaner" || \
+    grep -a -q "$witness" "$APP/Cleaner" || \
         fail "linked binary has no appShortcuts witness"
 }
 

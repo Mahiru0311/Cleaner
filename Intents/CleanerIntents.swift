@@ -118,9 +118,12 @@ public final class CLCleanerShortcutsInfo: NSObject {
         CleanerShortcuts.appShortcuts.count
     }
     @objc public static var shortcutTitles: [String] {
-        CleanerShortcuts.appShortcuts.compactMap { shortcut in
-            guard let title = shortcut.shortTitle else { return nil }
-            return String(localized: title)
-        }
+        // AppShortcut does not expose shortTitle for reading (it is only
+        // an initializer parameter), so the display title comes from the
+        // intent itself — the same string the Shortcuts app shows for the
+        // action. There is one title per REGISTERED shortcut, so the count
+        // still comes from the provider: an empty provider shows as empty
+        // here, which is exactly what the guide page's live status needs.
+        CleanerShortcuts.appShortcuts.map { _ in String(localized: CleanCacheIntent.title) }
     }
 }

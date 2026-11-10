@@ -133,8 +133,12 @@ EOF
 # args (-Xfrontend eats exactly one argument, so a single -Xfrontend with
 # the path after it leaves the path as a positional input file —
 # run 42853045304 failed on exactly that). The protocols file is
-# Intents/swift_const_gather_protocols.json (the AppIntents protocols
-# to gather). After linking, BEFORE signing,
+# Intents/swift_const_gather_protocols.json: a BARE JSON ARRAY of
+# "Module.Protocol" strings. The {"protocols": [...]} object form is
+# rejected by swift-frontend as malformed (run 42854024396); the bare
+# array is the accepted form, probed on the runner (run 42855820431:
+# bare array x8 and x7 PASS, object/strings/objects/version/map all
+# FAIL). After linking, BEFORE signing,
 # appintentsmetadataprocessor turns them into .app/Metadata.appintents/
 # (extract.actionsdata + version.json). The one unknown is whether the
 # processor accepts the separate CleanerIntents module — if it extracts

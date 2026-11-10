@@ -3,6 +3,7 @@
 browser only — no editing, no sharing, no plist/hex editors, no Go to Path;
 KernelSU Miuix home; WQFiles cache cleaner 1:1; GestaltX icon language;
 SF Symbols only, no emoji)."""
+import json
 import re
 from pathlib import Path
 
@@ -567,7 +568,14 @@ require(build, "extract_app_intents Cleaner", "fallback extraction for the app m
 require(build, '"$APP/Metadata.appintents"', "metadata written into the .app before signing")
 require(build, '"$app_path/Metadata.appintents', "metadata checked on the extracted IPA")
 protocols = read(ROOT / "Intents" / "swift_const_gather_protocols.json")
-require(protocols, '"protocols"', "protocols file has the protocols list")
+# Bare JSON array of "Module.Protocol" strings — the {"protocols": [...]}
+# object form is rejected by swift-frontend as malformed (run 42854024396);
+# probed on the runner, only the bare array parses (run 42855820431).
+_parsed_protocols = json.loads(protocols)
+if not isinstance(_parsed_protocols, list) or "AppIntents.AppIntent" not in _parsed_protocols:
+    raise AssertionError("protocols file must be a bare JSON array of Module.Protocol strings (probe 42855820431)")
+forbid(protocols, '"protocols"', "object wrapper rejected by swift-frontend (probe 42855820431)")
+forbid(protocols, "IntentResult", "IntentResult is a struct, not a protocol")
 require(protocols, "AppIntents.AppIntent", "AppIntent is gathered")
 require(protocols, "AppIntents.AppShortcutsProvider", "AppShortcutsProvider is gathered")
 validator = read(ROOT / "tests" / "check_appintents_metadata.py")

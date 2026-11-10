@@ -71,7 +71,7 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
             cat "$OUT/ios-swift.log" >&2
             exit 1
         }
-    SOURCES=(Core/CLGrant.m Core/CLScan.m Core/CLCache.m Core/CLApp.m Core/CLLaunchServices.m Core/CLCustomClean.m Core/CLBackgroundClean.m App/CLUI.m App/CLCleanerViewController.m App/CLAppsViewController.m App/CLCustomCleanViewController.m App/CLAppActions.m App/CLAppDirectoryViewController.m App/CLHomeViewController.m App/CLSettingsViewController.m App/CLLogViewController.m App/CLTabBarController.m App/main.m)
+    SOURCES=(Core/CLGrant.m Core/CLScan.m Core/CLCache.m Core/CLApp.m Core/CLLaunchServices.m Core/CLCustomClean.m Core/CLBackgroundClean.m App/CLUI.m App/CLCleanerViewController.m App/CLAppsViewController.m App/CLCustomCleanViewController.m App/CLAppActions.m App/CLAppDirectoryViewController.m App/CLHomeViewController.m App/CLSettingsViewController.m App/CLLogViewController.m App/CLRulePickerViewController.m App/CLShortcutsGuideViewController.m App/CLTabBarController.m App/main.m)
     FLAGS=(-fobjc-arc -fmodules "-fmodules-cache-path=$OUT/modules-ios" -arch arm64 "-miphoneos-version-min=$MIN_OS" -isysroot "$IOS_SDK" -I Core -I App -I "$OUT" -Wall -Wextra -Werror -O2)
     xcrun --sdk iphoneos clang -fsyntax-only "${FLAGS[@]}" "${SOURCES[@]}" > "$OUT/ios-syntax.log" 2>&1 || {
         cat "$OUT/ios-syntax.log" >&2

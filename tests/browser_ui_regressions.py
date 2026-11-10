@@ -491,6 +491,13 @@ for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.
     require(build, source, f"build source {source}")
 forbid(build, "WQCore.m", "v0.1 build source")
 require(build, "-Os -flto -dead_strip", "size optimisation flags")
+# v2.5: the strict check in run_all_tests.sh has its OWN source list — a
+# file in build.sh but not there links fine in build.sh and then fails the
+# preflight link with undefined symbols (CLRulePickerViewController /
+# CLShortcutsGuideViewController in run 42822455960). Both lists must match.
+runner = read(ROOT / "tests" / "run_all_tests.sh")
+for source in ("App/CLRulePickerViewController.m", "App/CLShortcutsGuideViewController.m"):
+    require(runner, source, f"strict-check source {source}")
 require(info, "<string>0.2.5</string>", "version 0.2.5")
 forbid(info, "<string>0.2.4</string>", "old version 0.2.4")
 forbid(info, "CFBundleIcons~ipad", "iPad icon set")

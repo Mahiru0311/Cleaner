@@ -711,13 +711,16 @@ forbid(cleaner, "arrayByAddingObjectsFromArray", "batch merge no longer appends 
 # daemon inode scan finished, freezing the whole UI (Home showed "—",
 # the tab-bar Liquid Glass pill froze mid-morph). Main-thread lookups now
 # return the already-loaded snapshot + built-in names without triggering
-# a load and without waiting for one in progress (objc_sync_tryEnter);
+# a load and without waiting for one in progress (NSLock tryLock);
 # the names warm up on cl_io() at launch instead. The batch merge also
 # moved to Core: a replaced row that moved after the re-sort falls back
 # to a plain reloadData, because reloadRows needs the path to exist
 # before AND after the update at the same index.
-require(ls, "objc_sync_tryEnter", "main-thread lookups never wait for the LS lock")
-require(ls, "objc/objc-sync.h", "the header was renamed in the Xcode 26 SDKs (runs 42931834738/42932018244); <objc/sync.h> only as a __has_include fallback")
+# (objc_sync_tryEnter was the first try: it is not declared by any public
+# header in the Xcode 26 SDKs — runs 42931834738/42932018244/42932279714 —
+# so the lock is a plain NSLock and the main thread uses tryLock.)
+require(ls, "tryLock", "main-thread lookups never wait for the LS lock")
+require(ls, "NSLock *cl_ls_lock", "LS state is guarded by a plain NSLock")
 require(ls, "cl_known_name_no_load_locked", "main-thread lookups read the snapshot without loading")
 require(ls, "if (NSThread.isMainThread) return;", "main thread never triggers an LS load")
 require(ls, "cl_test_ls_load_attempt_count", "load-attempt counter for the main-thread test")

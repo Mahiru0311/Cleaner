@@ -12,21 +12,13 @@
 #import <string.h>
 #import <sys/stat.h>
 
-// objc_sync_tryEnter / objc_sync_exit are the non-blocking / release forms
-// of the @synchronized lock. The header was renamed in the Xcode 26 SDKs
-// (<objc/sync.h> no longer exists there — run 42931834738: file not found;
-// the real header is <objc/objc-sync.h>), so include whichever the SDK
-// has; the extern fallback (with _Nonnull, matching the runtime's own
-// declaration — run 42932018244: conflicting types without it) covers
-// SDKs that have neither.
-#if __has_include(<objc/objc-sync.h>)
-#import <objc/objc-sync.h>
-#elif __has_include(<objc/sync.h>)
-#import <objc/sync.h>
-#else
-extern bool objc_sync_tryEnter(id _Nonnull obj);
-extern void objc_sync_exit(id _Nonnull obj);
-#endif
+// v2.9: the LS state is guarded by a plain NSLock, not @synchronized.
+// @synchronized has no non-blocking form in the public SDKs —
+// objc_sync_tryEnter is not declared by any public header (the Xcode 26
+// SDKs' <objc/objc-sync.h> only declares enter/exit; runs 42931834738,
+// 42932018244, 42932279714). NSLock's tryLock is the public non-blocking
+// acquire, and the main thread uses it so it never waits for a background
+// load in progress (v2.8 cold-launch freeze).
 
 #pragma mark - App names from the LaunchServices database
 
@@ -54,11 +46,11 @@ static const NSUInteger kCLLSMaxBundleRecords = 100000;
 static const NSUInteger kCLLSMaxDecodedStrings = 200000;
 static const NSUInteger kCLLSMaxDecodedStringBytes = 8u * 1024u * 1024u;
 
-static NSObject *cl_ls_lock(void)
+static NSLock *cl_ls_lock(void)
 {
-    static NSObject *lock;
+    static NSLock *lock;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    dispatch_once(&once, ^{ lock = [NSLock new]; });
     return lock;
 }
 
@@ -784,17 +776,20 @@ static NSString *cl_display_name_with_lookup(NSString *bundleID, BOOL load)
 
 // v2.9: on the main thread, take the lock only if it is free (a load in
 // progress holds it for the whole daemon enumeration) and read the snapshot
-// without loading. objc_sync_tryEnter is the non-blocking form of the
-// @synchronized lock the background paths use, so the two interoperate.
+// without loading. NSLock tryLock is the non-blocking acquire; the
+// background paths use the same lock, so the two interoperate.
 BOOL cl_display_names_loaded(void)
 {
     if (NSThread.isMainThread) {
-        if (!objc_sync_tryEnter(cl_ls_lock())) return NO;
+        if (![cl_ls_lock() tryLock]) return NO;
         BOOL loaded = gLSLoaded;
-        objc_sync_exit(cl_ls_lock());
+        [cl_ls_lock() unlock];
         return loaded;
     }
-    @synchronized (cl_ls_lock()) { return gLSLoaded; }
+    [cl_ls_lock() lock];
+    BOOL loaded = gLSLoaded;
+    [cl_ls_lock() unlock];
+    return loaded;
 }
 
 void cl_load_display_names(void)
@@ -803,7 +798,9 @@ void cl_load_display_names(void)
     // A main-thread call used to freeze the UI inside the daemon
     // enumeration (v2.8 cold-launch freeze); the UI thread never loads.
     if (NSThread.isMainThread) return;
-    @synchronized (cl_ls_lock()) { cl_load_ls_names_locked(); }
+    [cl_ls_lock() lock];
+    cl_load_ls_names_locked();
+    [cl_ls_lock() unlock];
 }
 
 void cl_display_names_reset_miss(void)
@@ -812,18 +809,18 @@ void cl_display_names_reset_miss(void)
         // v2.9: skip the reset while a load holds the lock — the retry
         // state can wait; blocking the UI thread for it cannot. (Called
         // from pull-to-refresh on the main thread.)
-        if (!objc_sync_tryEnter(cl_ls_lock())) return;
+        if (![cl_ls_lock() tryLock]) return;
         [NSUserDefaults.standardUserDefaults removeObjectForKey:kCLLSMissKey];
         gLSNextRetryAt = 0;
         gLSFailureCount = 0;
-        objc_sync_exit(cl_ls_lock());
+        [cl_ls_lock() unlock];
         return;
     }
-    @synchronized (cl_ls_lock()) {
-        [NSUserDefaults.standardUserDefaults removeObjectForKey:kCLLSMissKey];
-        gLSNextRetryAt = 0;
-        gLSFailureCount = 0;
-    }
+    [cl_ls_lock() lock];
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:kCLLSMissKey];
+    gLSNextRetryAt = 0;
+    gLSFailureCount = 0;
+    [cl_ls_lock() unlock];
 }
 
 NSString *cl_bundle_id_for_container(NSString *path)
@@ -835,16 +832,16 @@ NSString *cl_bundle_id_for_container(NSString *path)
         // v2.9: no load, no wait — nil when the names aren't loaded yet
         // (or a load is in progress). Main-thread callers only use this
         // for labels; the background scan fills in the real ids.
-        if (!objc_sync_tryEnter(cl_ls_lock())) return nil;
+        if (![cl_ls_lock() tryLock]) return nil;
         NSString *bid = gLSLoaded ? gLSContainers[key] : nil;
-        objc_sync_exit(cl_ls_lock());
+        [cl_ls_lock() unlock];
         return [bid isKindOfClass:NSString.class] ? bid : nil;
     }
-    @synchronized (cl_ls_lock()) {
-        cl_load_ls_names_locked();
-        NSString *bid = gLSContainers[key];
-        return [bid isKindOfClass:NSString.class] ? bid : nil;
-    }
+    [cl_ls_lock() lock];
+    cl_load_ls_names_locked();
+    NSString *bid = gLSContainers[key];
+    [cl_ls_lock() unlock];
+    return [bid isKindOfClass:NSString.class] ? bid : nil;
 }
 
 NSString *cl_display_name(NSString *bundleID)
@@ -854,12 +851,15 @@ NSString *cl_display_name(NSString *bundleID)
         // v2.9: snapshot + built-in names only. The letter tile falls back
         // to the bundle id when this returns nil; the background scan
         // replaces the rows with real names when its batches arrive.
-        if (!objc_sync_tryEnter(cl_ls_lock())) return nil;
+        if (![cl_ls_lock() tryLock]) return nil;
         NSString *name = cl_display_name_with_lookup(bundleID, NO);
-        objc_sync_exit(cl_ls_lock());
+        [cl_ls_lock() unlock];
         return name;
     }
-    @synchronized (cl_ls_lock()) { return cl_display_name_with_lookup(bundleID, YES); }
+    [cl_ls_lock() lock];
+    NSString *name = cl_display_name_with_lookup(bundleID, YES);
+    [cl_ls_lock() unlock];
+    return name;
 }
 
 NSArray<NSString *> *cl_ls_container_paths(NSString *storeHint)
@@ -904,21 +904,23 @@ NSString *cl_bundle_path_for_id(NSString *bundleID)
     if (NSThread.isMainThread) {
         // v2.9: no load, no wait — nil when the names aren't loaded yet.
         // The bundle-icon fallback only runs off the main thread anyway.
-        if (!objc_sync_tryEnter(cl_ls_lock())) return nil;
+        if (![cl_ls_lock() tryLock]) return nil;
         NSString *path = gLSLoaded ? gLSBundlePaths[bundleID] : nil;
-        objc_sync_exit(cl_ls_lock());
+        [cl_ls_lock() unlock];
         return [path isKindOfClass:NSString.class] ? path : nil;
     }
-    @synchronized (cl_ls_lock()) {
-        cl_load_ls_names_locked();
-        NSString *path = gLSBundlePaths[bundleID];
-        return [path isKindOfClass:NSString.class] ? path : nil;
-    }
+    [cl_ls_lock() lock];
+    cl_load_ls_names_locked();
+    NSString *path = gLSBundlePaths[bundleID];
+    [cl_ls_lock() unlock];
+    return [path isKindOfClass:NSString.class] ? path : nil;
 }
 
 #ifdef CL_ACCESS_TESTING
 void cl_test_hold_ls_lock_for(NSTimeInterval seconds)
 {
-    @synchronized (cl_ls_lock()) { [NSThread sleepForTimeInterval:seconds]; }
+    [cl_ls_lock() lock];
+    [NSThread sleepForTimeInterval:seconds];
+    [cl_ls_lock() unlock];
 }
 #endif

@@ -26,17 +26,9 @@ static CGFloat CLCacheScanFraction(NSString *status)
     return (CGFloat)done / (CGFloat)total;
 }
 
-// Merge key for a row (v2.8): bundle id for apps (one app can own
-// several containers, but the scan emits one row per app), the target
-// path for the crash-logs row (no bundle id), container path as a
-// fallback.
-static NSString *CLCacheItemMergeKey(CLCacheItem *item)
-{
-    if (item.crashLogs) return item.targets.firstObject ?: @"crash-logs";
-    if (item.bundleID.length) return item.bundleID;
-    return item.containerPath ?: @"";
-}
-
+// Merge key and batch merge live in Core (CLCacheItemMergeKey /
+// cl_cache_merge_items, v2.9) so the table-update invariant is
+// unit-testable; the VC only decides animated update vs reloadData.
 static void CLCacheSelectionCategories(NSArray<CLCacheItem *> *items,
                                        BOOL *hasApps,
                                        BOOL *hasCrashLogs,
@@ -419,24 +411,14 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
             // same app REPLACES its cached row in place (carrying the
             // user's selection over), so the list never shows the same
             // app twice and the total stays stable as rows refresh.
-            NSMutableArray<CLCacheItem *> *merged = [(strongSelf->_items ?: @[]) mutableCopy];
-            NSMutableSet<CLCacheItem *> *replaced = [NSMutableSet new];
-            for (CLCacheItem *fresh in newItems) {
-                NSString *key = CLCacheItemMergeKey(fresh);
-                NSUInteger existing = [merged indexOfObjectPassingTest:^BOOL(CLCacheItem *it, NSUInteger __unused i, BOOL * __unused s) {
-                    return [CLCacheItemMergeKey(it) isEqualToString:key];
-                }];
-                if (existing != NSNotFound) {
-                    fresh.selected = merged[existing].selected;
-                    merged[existing] = fresh;
-                    [replaced addObject:fresh];
-                } else {
-                    [merged addObject:fresh];
-                }
-            }
-            strongSelf->_items = [merged sortedArrayUsingComparator:^NSComparisonResult(CLCacheItem *a, CLCacheItem *b) {
-                return a.bytes > b.bytes ? NSOrderedAscending : (a.bytes < b.bytes ? NSOrderedDescending : NSOrderedSame);
-            }];
+            // v2.9: the merge lives in Core (cl_cache_merge_items). When
+            // a replaced row moved after the re-sort, the animated
+            // insert/reload block below would be invalid — a reload path
+            // must exist before AND after the update, at the same index —
+            // so that batch falls back to a plain reloadData.
+            NSSet<CLCacheItem *> *replaced = nil;
+            BOOL moved = NO;
+            strongSelf->_items = cl_cache_merge_items(strongSelf->_items, newItems, &replaced, &moved);
             [strongSelf rebuildVisibleItems];
             // Insert the new rows with a fade (v2.3) instead of reloading
             // the whole table — the list visibly grows while scanning.
@@ -444,7 +426,9 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
             // a row that already exists crashes the table update.
             // While searching the visible list is filtered, so fall back
             // to a plain reload there.
-            if (!strongSelf->_query.length) {
+            if (moved || strongSelf->_query.length) {
+                [strongSelf.tableView reloadData];
+            } else {
                 NSMutableArray<NSIndexPath *> *insertPaths = [NSMutableArray new];
                 NSMutableArray<NSIndexPath *> *reloadPaths = [NSMutableArray new];
                 for (CLCacheItem *item in newItems) {
@@ -463,8 +447,6 @@ static NSString *CLCacheFooterScope(NSArray<CLCacheItem *> *items)
                     UITableViewHeaderFooterView *header = [strongSelf.tableView headerViewForSection:1];
                     if (header) header.textLabel.text = [strongSelf tableView:strongSelf.tableView titleForHeaderInSection:1];
                 }
-            } else {
-                [strongSelf.tableView reloadData];
             }
             [strongSelf updateButtons];
         });

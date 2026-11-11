@@ -33,6 +33,7 @@ def forbid_any(text: str, needles, label: str) -> None:
 
 cleaner = read(APP / "CLCleanerViewController.m")
 cache = read(CORE / "CLCache.m")
+ls = read(CORE / "CLLaunchServices.m")
 home = read(APP / "CLHomeViewController.m")
 tabbar = read(APP / "CLTabBarController.m")
 settings = read(APP / "CLSettingsViewController.m")
@@ -546,7 +547,7 @@ require(background, "cl-intent-last-run.plist", "last-run plist in the App Group
 # extract.actionsdata iOS reads (not a proxy): CleanCacheIntent must be
 # discoverable and background, and the CleanerShortcuts auto-shortcuts
 # must carry both phrases. validate_app re-checks the same package on
-# the EXTRACTED IPA contents. CFBundleVersion is 7 now (it was frozen
+# the EXTRACTED IPA contents. CFBundleVersion is 9 now (it was frozen
 # at 1 across 0.2.4/0.2.5/0.2.6, and shortcutsd caches metadata by
 # bundle-ID + version, so a same-version reinstall often does not
 # re-index). The "system discovers intents by scanning the binary"
@@ -598,7 +599,7 @@ require(validator, "0A9ShortcutsV", "mangled provider name, literal never appear
 require(validator, "autoShortcuts", "validator checks the auto-shortcuts section")
 require(validator, "extract.actionsdata", "validator parses the actions data")
 require(validator, "version.json", "validator requires version.json")
-require(info, "<string>8</string>", "CFBundleVersion is 8")
+require(info, "<string>9</string>", "CFBundleVersion is 9")
 forbid(info, "<string>1</string>", "old frozen CFBundleVersion 1 is gone")
 require(main, "Metadata.appintents", "main comment describes the metadata file")
 forbid(main, "discovers intents by scanning the binary", "binary-scanning claim is gone from main")
@@ -698,9 +699,33 @@ require(cache, "skipMeasurement", "scanner skips measurement on the fast path")
 require(cache, "cl_cache_save_items", "last scan is persisted")
 require(cache, "cl_cache_load_items", "persisted list loads back")
 require(cleaner, "cl_cache_load_items", "clean page paints the persisted list first")
-require(cleaner, "CLCacheItemMergeKey", "fresh rows replace cached rows by key")
+require(cleaner, "cl_cache_merge_items", "fresh rows merge by key through Core")
 require(cleaner, "reloadRowsAtIndexPaths", "replaced cached rows reload in place, not insert")
 forbid(cleaner, "arrayByAddingObjectsFromArray", "batch merge no longer appends blindly (duplicates on rescan)")
+
+# --- Main-thread LaunchServices guard + merge fallback (v2.9): v2.8's
+# cached first paint rendered rows on the main thread at cold launch, and
+# cell config calls cl_app_icon -> cl_letter_tile -> cl_display_name,
+# which loaded the LaunchServices database by enumerating the daemon
+# containers — the main thread blocked inside that enumeration until the
+# daemon inode scan finished, freezing the whole UI (Home showed "—",
+# the tab-bar Liquid Glass pill froze mid-morph). Main-thread lookups now
+# return the already-loaded snapshot + built-in names without triggering
+# a load and without waiting for one in progress (objc_sync_tryEnter);
+# the names warm up on cl_io() at launch instead. The batch merge also
+# moved to Core: a replaced row that moved after the re-sort falls back
+# to a plain reloadData, because reloadRows needs the path to exist
+# before AND after the update at the same index.
+require(ls, "objc_sync_tryEnter", "main-thread lookups never wait for the LS lock")
+require(ls, "cl_known_name_no_load_locked", "main-thread lookups read the snapshot without loading")
+require(ls, "if (NSThread.isMainThread) return;", "main thread never triggers an LS load")
+require(ls, "cl_test_ls_load_attempt_count", "load-attempt counter for the main-thread test")
+require(tabbar, "cl_load_display_names", "names warm up on a background thread at launch")
+require(tabbar, "dispatch_async(cl_io()", "warm-up runs off the main thread")
+require(cleaner, "if (moved || strongSelf->_query.length)", "moved replaced rows fall back to reloadData")
+require(cache, "CLCacheItemMergeKey", "merge key lives in Core")
+require(cache, "cl_cache_merge_items", "Core merge function")
+forbid(cleaner, "NSMutableArray<CLCacheItem *> *merged = [(strongSelf->_items", "inline merge is gone from the VC")
 
 # --- Mode line (v2.5): v2.1's 15pt + max 2 lines did not stop the
 # mid-word break ("<App Group> [沙 / 盒模式]" on the 20:46 screenshot).
@@ -708,10 +733,10 @@ forbid(cleaner, "arrayByAddingObjectsFromArray", "batch merge no longer appends 
 require(home, "沙盒模式", "mode line is short")
 forbid(home, '@"<App Group> [沙盒模式]"', "old mode line that broke mid-word")
 # v2.7: the version label is dynamic (reads the bundle), and the two
-# fallbacks use 0.2.8 — no hardcoded 0.2.7 anywhere in Home.
+# fallbacks use 0.2.9 — no hardcoded 0.2.8 anywhere in Home.
 require(home, 'stringWithFormat:@"版本：%@"', "version label is dynamic, not hardcoded")
-require(home, '@"0.2.8"', "home fallback version tracks the release")
-forbid(home, "0.2.7", "no hardcoded 0.2.7 in home")
+require(home, '@"0.2.9"', "home fallback version tracks the release")
+forbid(home, "0.2.8", "no hardcoded 0.2.8 in home")
 
 # --- Animations (v2.3, redone): scan batches insert with a fade, the
 # progress bar shows the real scan fraction, cleaning shows a per-row
@@ -748,7 +773,7 @@ require(main, "cl_set_container_label_resolver", "container label resolver")
 require(main, "cl_set_container_list_provider", "container list provider")
 require(main, "cl_recover_interrupted_restore", "interrupted restore recovery")
 
-# --- Build: only the v2 sources, iPhone only, 0.2.8. ---
+# --- Build: only the v2 sources, iPhone only, 0.2.9. ---
 for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.m",
                "Core/CLLaunchServices.m", "Core/CLCustomClean.m", "Core/CLBackgroundClean.m",
                "App/CLUI.m",
@@ -774,8 +799,8 @@ forbid(build, "-Os -dead_strip", "dead-strip removed from the link")
 runner = read(ROOT / "tests" / "run_all_tests.sh")
 for source in ("App/CLRulePickerViewController.m", "App/CLShortcutsGuideViewController.m"):
     require(runner, source, f"strict-check source {source}")
-require(info, "<string>0.2.8</string>", "version 0.2.8")
-forbid(info, "<string>0.2.7</string>", "old version 0.2.7")
+require(info, "<string>0.2.9</string>", "version 0.2.9")
+forbid(info, "<string>0.2.8</string>", "old version 0.2.8")
 forbid(info, "CFBundleIcons~ipad", "iPad icon set")
 forbid(info, "UISupportedInterfaceOrientations~ipad", "iPad orientations")
 

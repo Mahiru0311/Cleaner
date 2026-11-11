@@ -830,6 +830,55 @@ NSArray<CLCacheItem *> *cl_cache_load_items(NSTimeInterval *savedAtOut)
     return items;
 }
 
+// Merge key for a row (v2.8, moved to Core in v2.9 so the batch merge is
+// unit-testable): bundle id for apps (one app can own several containers,
+// but the scan emits one row per app), the target path for the crash-logs
+// row (no bundle id), container path as a fallback.
+NSString *CLCacheItemMergeKey(CLCacheItem *item)
+{
+    if (item.crashLogs) return item.targets.firstObject ?: @"crash-logs";
+    if (item.bundleID.length) return item.bundleID;
+    return item.containerPath ?: @"";
+}
+
+NSArray<CLCacheItem *> *cl_cache_merge_items(NSArray<CLCacheItem *> *current,
+                                             NSArray<CLCacheItem *> *fresh,
+                                             NSSet<CLCacheItem *> *_Nullable *_Nullable replacedOut,
+                                             BOOL *movedOut)
+{
+    NSMutableArray<CLCacheItem *> *merged = [(current ?: @[]) mutableCopy];
+    NSMutableSet<CLCacheItem *> *replaced = [NSMutableSet new];
+    // Pre-sort index of each replaced row, in the merged array before the
+    // re-sort. A replaced row's pre-sort index is its index in the table
+    // before this batch; its post-sort index is its index after.
+    NSMutableDictionary<CLCacheItem *, NSNumber *> *preSortIndex = [NSMutableDictionary new];
+    for (CLCacheItem *item in fresh) {
+        NSString *key = CLCacheItemMergeKey(item);
+        NSUInteger existing = [merged indexOfObjectPassingTest:^BOOL(CLCacheItem *it, NSUInteger __unused i, BOOL * __unused s) {
+            return [CLCacheItemMergeKey(it) isEqualToString:key];
+        }];
+        if (existing != NSNotFound) {
+            item.selected = merged[existing].selected;
+            merged[existing] = item;
+            [replaced addObject:item];
+            preSortIndex[item] = @(existing);
+        } else {
+            [merged addObject:item];
+        }
+    }
+    NSArray<CLCacheItem *> *sorted = [merged sortedArrayUsingComparator:^NSComparisonResult(CLCacheItem *a, CLCacheItem *b) {
+        return a.bytes > b.bytes ? NSOrderedAscending : (a.bytes < b.bytes ? NSOrderedDescending : NSOrderedSame);
+    }];
+    BOOL moved = NO;
+    for (CLCacheItem *item in replaced) {
+        NSUInteger after = [sorted indexOfObjectIdenticalTo:item];
+        if (after == NSNotFound || after != preSortIndex[item].unsignedIntegerValue) { moved = YES; break; }
+    }
+    if (replacedOut) *replacedOut = [replaced copy];
+    if (movedOut) *movedOut = moved;
+    return sorted;
+}
+
 #ifdef CL_ACCESS_TESTING
 NSString *cl_test_items_cache_path = nil;
 #endif

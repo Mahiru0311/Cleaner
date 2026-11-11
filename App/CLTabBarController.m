@@ -15,12 +15,21 @@
 #import "CLCleanerViewController.h"
 #import "CLAppsViewController.h"
 #import "CLSettingsViewController.h"
+#import "CLLaunchServices.h"
+#import "CLUI.h"
 
 @implementation CLTabBarController
 
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+    // v2.9: warm the LaunchServices names on a background thread before
+    // any page can need one. The load enumerates the daemon containers
+    // (slow on a cold launch), so it must start early — but never on the
+    // main thread. This only shrinks the race window: the main-thread
+    // guard in CLLaunchServices is what guarantees no freeze even if a
+    // page renders before this finishes.
+    dispatch_async(cl_io(), ^{ cl_load_display_names(); });
     self.tabBar.tintColor = UIColor.systemBlueColor;
     self.delegate = self;
 

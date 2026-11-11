@@ -8,6 +8,7 @@
 #import "CLLaunchServices.h"
 #import "CLGrant.h"
 #import "CLScan.h"
+#import <objc/sync.h>
 #import <stdlib.h>
 #import <string.h>
 #import <sys/stat.h>
@@ -539,6 +540,14 @@ static BOOL gLSLoaded;
 static NSUInteger gLSFailureCount;
 static NSTimeInterval gLSNextRetryAt;
 
+#ifdef CL_ACCESS_TESTING
+// Test hook storage (see the header): loader-entry count, read by the
+// tests. Incremented under the LS lock in cl_load_ls_names_locked; read
+// by tests only after joining the loading thread, so no atomic is needed.
+NSUInteger cl_test_ls_load_attempts_storage;
+NSUInteger cl_test_ls_load_attempt_count(void) { return cl_test_ls_load_attempts_storage; }
+#endif
+
 static void cl_ls_clear_snapshot_if_changed(BOOL changed)
 {
     if (!changed) return;
@@ -562,6 +571,12 @@ static void cl_ls_note_failure(NSTimeInterval now, NSString *reason)
 
 static void cl_load_ls_names_locked(void)
 {
+#ifdef CL_ACCESS_TESTING
+    // Counts loader entries (any thread). The v2.9 main-thread guard must
+    // leave this at 0 after main-thread lookups; a background load must
+    // raise it.
+    cl_test_ls_load_attempts_storage++;
+#endif
     NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
     BOOL currentChanged = NO;
     if (gLSLoaded && gLSStorePath) {
@@ -717,24 +732,78 @@ static NSDictionary<NSString *, NSString *> *cl_builtin_names(void)
     return names;
 }
 
-static NSString *cl_known_name_locked(NSString *bundleID)
+// The already-loaded snapshot + built-in names, WITHOUT triggering a load.
+// Called with the LS lock held. This is what main-thread callers get (v2.9):
+// loading enumerates the daemon containers and blocks the calling thread
+// until the daemon inode scan finishes, so the main thread must never wait
+// for it — neither by triggering a load nor by waiting for one in progress.
+static NSString *cl_known_name_no_load_locked(NSString *bundleID)
 {
-    cl_load_ls_names_locked();
     return gLSDisplay[bundleID] ?: cl_builtin_names()[bundleID] ?: gLSBundleName[bundleID];
 }
 
+static NSString *cl_known_name_locked(NSString *bundleID)
+{
+    cl_load_ls_names_locked();
+    return cl_known_name_no_load_locked(bundleID);
+}
+
+// Display name with the snapshot lookup chosen by the caller (load = YES
+// loads the database first when it isn't loaded yet). Lock held by caller.
+static NSString *cl_display_name_with_lookup(NSString *bundleID, BOOL load)
+{
+    NSString *name = load ? cl_known_name_locked(bundleID) : cl_known_name_no_load_locked(bundleID);
+    if (name) return name;
+    // Unknown id: use the closest parent app (com.apple.news.widget -> News).
+    NSArray *parts = [bundleID componentsSeparatedByString:@"."];
+    for (NSInteger n = (NSInteger)parts.count - 1; n >= 2; n--) {
+        NSString *prefix = [[parts subarrayWithRange:NSMakeRange(0, (NSUInteger)n)] componentsJoinedByString:@"."];
+        NSString *parent = load ? cl_known_name_locked(prefix) : cl_known_name_no_load_locked(prefix);
+        if (parent) {
+            NSString *suffix = cl_safe_name(parts.lastObject);
+            return suffix.length ? [NSString stringWithFormat:@"%@ \u2013 %@", parent, suffix] : parent;
+        }
+    }
+    return nil;
+}
+
+// v2.9: on the main thread, take the lock only if it is free (a load in
+// progress holds it for the whole daemon enumeration) and read the snapshot
+// without loading. objc_sync_tryEnter is the non-blocking form of the
+// @synchronized lock the background paths use, so the two interoperate.
 BOOL cl_display_names_loaded(void)
 {
+    if (NSThread.isMainThread) {
+        if (!objc_sync_tryEnter(cl_ls_lock())) return NO;
+        BOOL loaded = gLSLoaded;
+        objc_sync_exit(cl_ls_lock());
+        return loaded;
+    }
     @synchronized (cl_ls_lock()) { return gLSLoaded; }
 }
 
 void cl_load_display_names(void)
 {
+    // v2.9: loading is owned by the background scan / launch warm-up.
+    // A main-thread call used to freeze the UI inside the daemon
+    // enumeration (v2.8 cold-launch freeze); the UI thread never loads.
+    if (NSThread.isMainThread) return;
     @synchronized (cl_ls_lock()) { cl_load_ls_names_locked(); }
 }
 
 void cl_display_names_reset_miss(void)
 {
+    if (NSThread.isMainThread) {
+        // v2.9: skip the reset while a load holds the lock — the retry
+        // state can wait; blocking the UI thread for it cannot. (Called
+        // from pull-to-refresh on the main thread.)
+        if (!objc_sync_tryEnter(cl_ls_lock())) return;
+        [NSUserDefaults.standardUserDefaults removeObjectForKey:kCLLSMissKey];
+        gLSNextRetryAt = 0;
+        gLSFailureCount = 0;
+        objc_sync_exit(cl_ls_lock());
+        return;
+    }
     @synchronized (cl_ls_lock()) {
         [NSUserDefaults.standardUserDefaults removeObjectForKey:kCLLSMissKey];
         gLSNextRetryAt = 0;
@@ -747,6 +816,15 @@ NSString *cl_bundle_id_for_container(NSString *path)
     if (!path.length) return nil;
     NSString *key = path.stringByStandardizingPath;
     if ([key hasPrefix:@"/var/"]) key = [@"/private" stringByAppendingString:key];
+    if (NSThread.isMainThread) {
+        // v2.9: no load, no wait — nil when the names aren't loaded yet
+        // (or a load is in progress). Main-thread callers only use this
+        // for labels; the background scan fills in the real ids.
+        if (!objc_sync_tryEnter(cl_ls_lock())) return nil;
+        NSString *bid = gLSLoaded ? gLSContainers[key] : nil;
+        objc_sync_exit(cl_ls_lock());
+        return [bid isKindOfClass:NSString.class] ? bid : nil;
+    }
     @synchronized (cl_ls_lock()) {
         cl_load_ls_names_locked();
         NSString *bid = gLSContainers[key];
@@ -757,21 +835,16 @@ NSString *cl_bundle_id_for_container(NSString *path)
 NSString *cl_display_name(NSString *bundleID)
 {
     if (!bundleID) return nil;
-    @synchronized (cl_ls_lock()) {
-        NSString *name = cl_known_name_locked(bundleID);
-        if (name) return name;
-        // Unknown id: use the closest parent app (com.apple.news.widget -> News).
-        NSArray *parts = [bundleID componentsSeparatedByString:@"."];
-        for (NSInteger n = (NSInteger)parts.count - 1; n >= 2; n--) {
-            NSString *prefix = [[parts subarrayWithRange:NSMakeRange(0, (NSUInteger)n)] componentsJoinedByString:@"."];
-            NSString *parent = cl_known_name_locked(prefix);
-            if (parent) {
-                NSString *suffix = cl_safe_name(parts.lastObject);
-                return suffix.length ? [NSString stringWithFormat:@"%@ \u2013 %@", parent, suffix] : parent;
-            }
-        }
-        return nil;
+    if (NSThread.isMainThread) {
+        // v2.9: snapshot + built-in names only. The letter tile falls back
+        // to the bundle id when this returns nil; the background scan
+        // replaces the rows with real names when its batches arrive.
+        if (!objc_sync_tryEnter(cl_ls_lock())) return nil;
+        NSString *name = cl_display_name_with_lookup(bundleID, NO);
+        objc_sync_exit(cl_ls_lock());
+        return name;
     }
+    @synchronized (cl_ls_lock()) { return cl_display_name_with_lookup(bundleID, YES); }
 }
 
 NSArray<NSString *> *cl_ls_container_paths(NSString *storeHint)
@@ -813,9 +886,24 @@ NSArray<NSString *> *cl_ls_container_paths(NSString *storeHint)
 NSString *cl_bundle_path_for_id(NSString *bundleID)
 {
     if (!bundleID.length) return nil;
+    if (NSThread.isMainThread) {
+        // v2.9: no load, no wait — nil when the names aren't loaded yet.
+        // The bundle-icon fallback only runs off the main thread anyway.
+        if (!objc_sync_tryEnter(cl_ls_lock())) return nil;
+        NSString *path = gLSLoaded ? gLSBundlePaths[bundleID] : nil;
+        objc_sync_exit(cl_ls_lock());
+        return [path isKindOfClass:NSString.class] ? path : nil;
+    }
     @synchronized (cl_ls_lock()) {
         cl_load_ls_names_locked();
         NSString *path = gLSBundlePaths[bundleID];
         return [path isKindOfClass:NSString.class] ? path : nil;
     }
 }
+
+#ifdef CL_ACCESS_TESTING
+void cl_test_hold_ls_lock_for(NSTimeInterval seconds)
+{
+    @synchronized (cl_ls_lock()) { [NSThread sleepForTimeInterval:seconds]; }
+}
+#endif

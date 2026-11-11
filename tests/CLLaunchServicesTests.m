@@ -108,6 +108,58 @@ static void TestRetryAfterDiscoveryFailure(NSString *path)
     CLCheck([cl_display_name(@"com.example.international") isEqualToString:@"Retry 日本"]);
 }
 
+// v2.9: the main-thread guard means lookups on the test's main thread no
+// longer trigger a load, so the parser/mapping tests below run their
+// load-dependent assertions on a background thread and wait for them.
+static void RunOnBackground(void (^block)(void))
+{
+    dispatch_group_t group = dispatch_group_create();
+    dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), block);
+    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+}
+
+// v2.9: the main thread must never trigger a LaunchServices load and never
+// wait for one. The test binary runs on the main thread, so these calls
+// ARE main-thread calls. The load-attempt counter must not move across any
+// of them; a background load must move it; and a main-thread call while a
+// background thread holds the lock must return at once (the v2.8 freeze
+// was the main thread waiting inside the daemon enumeration).
+static void TestMainThreadNeverLoads(void)
+{
+    CLCheck(cl_test_ls_load_attempt_count() == 0);
+    // Built-in names need no load at all.
+    CLCheck([cl_display_name(@"com.apple.mobilesafari") isEqualToString:@"Safari"]);
+    CLCheck(cl_test_ls_load_attempt_count() == 0);
+    // Unknown ids return nil without loading; the letter tile falls back
+    // to the bundle id and the background scan fills in the real name.
+    CLCheck(cl_display_name(@"com.example.unknown") == nil);
+    CLCheck(cl_bundle_id_for_container(@"/private/var/mobile/Containers/Data/Application/4CE791DB-6B04-4A39-8F59-AF32BA61D494") == nil);
+    CLCheck(cl_bundle_path_for_id(@"com.example.unknown") == nil);
+    CLCheck(cl_test_ls_load_attempt_count() == 0);
+    // Loading from the main thread is a no-op now.
+    cl_load_display_names();
+    CLCheck(cl_test_ls_load_attempt_count() == 0);
+    CLCheck(!cl_display_names_loaded());
+    // A background load DOES attempt one (it fails fast here: no store on
+    // the macOS host) — the guard is main-thread-only.
+    dispatch_group_t group = dispatch_group_create();
+    dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{ cl_load_display_names(); });
+    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+    CLCheck(cl_test_ls_load_attempt_count() >= 1);
+    // A main-thread call while a background thread holds the lock returns
+    // at once instead of waiting for the load in progress.
+    dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{ cl_test_hold_ls_lock_for(2.0); });
+    usleep(200 * 1000); // let the background thread take the lock first
+    CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+    NSString *name = cl_display_name(@"com.example.unknown");
+    CFAbsoluteTime elapsed = CFAbsoluteTimeGetCurrent() - started;
+    CLCheck(name == nil);
+    CLCheck(elapsed < 1.0);
+    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+    // Leave the retry state fresh for the parser tests below.
+    cl_display_names_reset_miss();
+}
+
 static void TestRefreshAndUnicodeSafety(NSString *path)
 {
     WriteData(StoreWithName(@"Cafe\u0301 日本 \u202Eevil"), path);
@@ -200,10 +252,11 @@ int main(void)
         id oldPreference = [NSUserDefaults.standardUserDefaults objectForKey:@"WQLaunchServicesStore"];
         @try {
             [NSUserDefaults.standardUserDefaults removeObjectForKey:@"WQLaunchServicesStore"];
-            TestRetryAfterDiscoveryFailure(path);
-            TestRefreshAndUnicodeSafety(path);
-            TestContainerMapping(path);
-            TestOversizedStoreFailsClosed(path);
+            TestMainThreadNeverLoads();
+            RunOnBackground(^{ TestRetryAfterDiscoveryFailure(path); });
+            RunOnBackground(^{ TestRefreshAndUnicodeSafety(path); });
+            RunOnBackground(^{ TestContainerMapping(path); });
+            RunOnBackground(^{ TestOversizedStoreFailsClosed(path); });
         } @finally {
             [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
             if (oldPreference) [NSUserDefaults.standardUserDefaults setObject:oldPreference forKey:@"WQLaunchServicesStore"];

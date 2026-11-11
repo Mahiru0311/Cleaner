@@ -40,6 +40,7 @@ compile_run CLSafetyTests $CORE_SOURCES tests/CLSafetyTests.m
 compile_run CLCacheSafetyTests $CORE_SOURCES tests/CLCacheSafetyTests.m
 compile_run CLCacheMeasureTests $CORE_SOURCES tests/CLCacheMeasureTests.m
 compile_run CLCacheFastPathTests $CORE_SOURCES tests/CLCacheFastPathTests.m
+compile_run CLCacheMergeTests $CORE_SOURCES tests/CLCacheMergeTests.m
 compile_run CLCachePurgeTests $CORE_SOURCES tests/CLCachePurgeTests.m
 compile_run CLCustomCleanTests $CORE_SOURCES Core/CLCustomClean.m tests/CLCustomCleanTests.m
 compile_run CLGrantCopyTests $CORE_SOURCES tests/CLGrantCopyTests.m

@@ -1026,3 +1026,35 @@ v2.7 共 8 次构建才成功（run 42866252916，head d717f77），中间还插
 IPA `~/workspace/downloads/cleaner-v2-8-ipa/Cleaner.ipa`，222,113 字节（< 250KB 目标），SHA-256 `7e35b91897b89a92fcd071085fe02b1e68615eb0856e48a3d11a7863d35da9c3`。
 亲验（下载的 IPA 本体）：9 个文件——二进制、Info.plist、4 个图标、_CodeSignature、`Metadata.appintents/extract.actionsdata`（1,795 字节）+ `version.json`（toolsVersion 26.6 / version 3.0）；无 .appex；校验器在发版包上通过（`app intents metadata OK: CleanCacheIntent (discoverable, background) + CleanerShortcuts (2 phrases)`）；元数据内容：intent 可发现 + 后台 + 标题「清理全部缓存」，provider `14CleanerIntents0A9ShortcutsV`，auto-shortcut 两条短语（`${applicationName}` 占位符）、shortTitle「清理全部缓存」、图标 trash；Info.plist 0.2.8 / build 8 / MinimumOS 26.0 / zh_CN / iPhone only（UIDeviceFamily [1]）/ Portrait；cleaner:// scheme；bundle id `com.mahiru.cleaner`；App Group `group.com.mahiru.cleaner` 在二进制内（entitlements）；`__swift5_types` 4 个描述符；二进制链接了 AppIntents。注意：主二进制 562,752 字节，**仍超 <500KB 的二进制目标**（v2.7 是 562,544，+208 字节；-Onone 未动）；IPA 仍在目标内。
 真机验证仍未做：**必须用户在 iPhone 17 / iOS 27.0 上确认**——选择器搜索栏能点、能输入过滤，「选择应用」标题不再盖住搜索栏；快捷指令清理明显变快；清理页冷启动先出上次的列表、再刷新。速度只能真机确认，代码层面不能宣称已快。**短链未生成**：Muse storage 上传要用户批 egress，批卡两次超时未批（approval `connector-attempt-d53d337c…`，2026-11-10 19:10 UTC 超时；文件未上传）。等用户在时再跑一次上传 + is.gd，补到这里。v2.7 短链 https://is.gd/bFhulo，2026-11-13 01:37 CST 过期。
+
+## 16. v2.9（2026-11-11 上午，v2.8 真机反馈：冷启动首页卡死）——bug 修复版
+
+### 症状
+
+用户 08:17 截图（`docs/v2-8-home-frozen-2026-11-11.jpg`）：首页 应用/可清理 都显示「—」，底栏 Liquid Glass 药丸横着拉长盖在 清理/应用 两个 tab 上，界面完全点不动。v2.8 在 07:50 还确认可用，所以这是冷启动才翻车的竞态。
+
+### 诊断（链上每一环都已在代码里核对）
+
+1. v2.8 的缓存首屏在 `viewDidLoad` 里立刻画行（`CLCleanerViewController.m:263-274`，`cl_cache_load_items` → `reloadData`），cell 配置调 `cl_app_icon(item.bundleID)`（:595）。
+2. 图标缓存未命中时走 `cl_letter_tile`（`CLUI.m:198`）→ `cl_display_name(bundleID)`（`CLUI.m:203`）。
+3. `cl_display_name` → `cl_known_name_locked` → `cl_load_ls_names_locked()`（`CLLaunchServices.m:563`），名字没加载就调 `cl_find_ls_store()`（:119）。
+4. iOS 27 上 `cl_system_areas_reachable()` 恒真（`CLGrant.m:164-170`，majorVersion >= 27），所以 `cl_find_ls_store` 每次都枚举 daemon 容器——`cl_enumerate(@"/private/var/mobile/Containers/Data/InternalDaemon", ...)`（`CLLaunchServices.m:136`），哪怕缓存的 csstore 路径还在。
+5. `cl_enumerate` → `cl_shared_children`（`CLScan.m:683`）：daemon 槽冷启动时先起异步 inode 扫描，再在 `while (dispatch_group_wait(group, 200ms) != 0)` 里堵住调用线程（:738），无上限。注释写明 daemon 扫描第一次要大半个小时（iOS 26 口径），磁盘缓存热了之后才增量。
+6. 所以主线程冻在 daemon 枚举里。底栏药丸是 iOS 26 Liquid Glass 选中动画冻在变形中途（症状，不是第二个 bug）。首页显示「—」是因为新进程里还没完成过扫描（`store.lastScanFinished == 0`，`CLHomeViewController.m:209-211`），而首页自己的后台扫描也被同一个共享扫描堵住——「—」本身是预期行为，等扫描完成就会填上；冻住才是 bug。
+7. 为什么是 v2.8、为什么 07:50 没事：v2.8 之前，行只在后台扫描先调过 `cl_load_display_names()`（`CLCache.m:1251`、1328，扫描线程）之后才渲染；v2.8 的缓存首屏让主线程在冷启动头 1–2 秒就渲染了行，抢在任何后台线程加载 LS 名字之前。07:50 那次应用已经跑了一会儿，LS 名字早加载完了，所以没事。
+8. 底栏确认：标准 `UITabBarController`，无自定义选中逻辑（`CLTabBarController.m`）——只有 `didSelect` 里的 0.18s crossfade（清理 tab 除外），且只在 tab 切换后跑；它不是冻住的原因，不改。
+
+### 修了什么
+
+- **主线程永不加载 LS 名字（真正的修复，`Core/CLLaunchServices.h/.m`）**：所有能进 `cl_load_ls_names_locked` 的入口——`cl_display_name`、`cl_bundle_id_for_container`、`cl_bundle_path_for_id`——在主线程上都改走已加载快照 + 内置名字表（新 `cl_known_name_no_load_locked`，不调 loader），并用 `objc_sync_tryEnter` 拿锁：锁被后台加载占着时立刻返回 fallback，不等。`cl_load_display_names()` 在主线程上直接 no-op（加载归后台扫描/启动预热）；`cl_display_names_loaded()` 在主线程上锁被占时返回 NO；`cl_display_names_reset_miss()` 在主线程上锁被占时跳过（从下拉刷新调它，之前也会堵主线程）。`objc_sync_tryEnter` 是 `@synchronized` 锁的非阻塞形态，两者可混用；同线程已持锁时递归成功，不死锁。主线程上的 fallback 是临时的：名字是内置表或 nil，字母 tile 用 bundle id 首字母顶一下；后台扫描加载完名字后，batch handler 会把缓存行换成带真名/真图标的新鲜行，界面自愈。
+- **启动预热（辅助，缩短竞态窗口）**：`CLTabBarController.viewDidLoad` 里 `dispatch_async(cl_io(), ^{ cl_load_display_names(); })`，在任何页面需要名字之前就开始加载。预热本身不保证不冻——保证的是上面的主线程守卫。
+- `cl_real_icon` 已核对是主线程安全的：只调私有 UIKit API `_applicationIconImageForBundleIdentifier` + 12x12 指纹比对，无文件 IO、无授权、无 LS 加载。`cl_bundle_icon`（读文件 + `cl_bundle_path_for_id`）本来就只在后台跑（`cl_app_icon` 里的 `background` 守卫）。
+- **合并块二次加固（同屏，便宜）**：`CLCacheItemMergeKey` + 合并逻辑从 `CLCleanerViewController` 移到 Core（`cl_cache_merge_items`），并算出 `moved`——替换行在重排后位置变了（自己字节变了，或上面插入了新行）。`reloadRows` 要求路径在更新前后都存在且在同一位置，位置变了的行用 `reloadRows` 会删错行/越界崩表，所以 `moved` 的 batch 整个回退到 `reloadData`。注意：仅靠「字节没变」不够——上面插入新行也会把替换行顶下去，`moved` 的判断是重排前后的下标比较，覆盖这两种情况。动画只在无移动的 batch 里保留。
+- **未动**：缓存首屏、targets-only 后台清理、选择器全容器树、选择器搜索栏修复、clean 动画（0.2.3 起未动，回归测试守着）、`Metadata.appintents` 提取流程、`openAppWhenRun=false`、无 extension、keepAlive。
+
+### 测试
+
+- 新 `tests/CLCacheMergeTests.m`（进 `tests/run_all_tests.sh`）：原地替换 + 继承选中 + 无移动；字节缩小下移 → moved；上面插入新行 → moved；纯插入 → 无移动；crash-log 行按键（目标路径）替换；不同 key 不合并；空列表合并排序。
+- `tests/CLLaunchServicesTests.m`：新 `TestMainThreadNeverLoads`（在 `main()` 里最先跑，测试进程主线程就是主线程）——内置名字（Safari）无需加载；未知 id / 容器 id / bundle 路径返回 nil 且加载计数不动；主线程调 `cl_load_display_names` 是 no-op；后台加载一次使计数 +1；后台持锁 2 秒时主线程调用立即返回（<1s）且为 nil；最后 `reset_miss` 恢复全新重试状态。旧的解析/映射测试改到后台线程跑（`RunOnBackground`）：主线程守卫下它们原本的「主线程调 lookup 就加载」假设已不成立，解析本身没变，换个线程测。
+- `tests/browser_ui_regressions.py` 新增 v2.9 段：`objc_sync_tryEnter`、`cl_known_name_no_load_locked`、主线程 no-op、加载计数钩子、tab bar 预热（`cl_load_display_names` + `dispatch_async(cl_io()`）、合并在 Core、`moved` → `reloadData` 回退；版本检查改 0.2.9 / build 9；Home fallback 改 0.2.9。
+- 本地已验（Linux，无 Xcode）：`browser_ui_regressions.py` 通过；`python3 -m unittest discover -s tests -p 'test_*.py'` 18 个，2 个失败与 v2.0–v2.8 相同（`test_build` 两用例缺 `plutil`，Linux 固有）；`bash -n build.sh tests/run_all_tests.sh` 通过。ObjC 测试在 macOS Actions runner 上跑（`run_all_tests.sh`）。

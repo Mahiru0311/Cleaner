@@ -194,6 +194,26 @@ CLCacheItem *_Nullable cl_cache_targets_only_item(NSString *container,
 void cl_cache_save_items(NSArray<CLCacheItem *> *items, NSUInteger totalApps);
 NSArray<CLCacheItem *> *_Nullable cl_cache_load_items(NSTimeInterval *_Nullable savedAtOut);
 
+// v2.9: batch merge for the clean page (moved from CLCleanerViewController
+// so the table-update invariant is unit-testable). The merge key is the
+// bundle id for apps (one row per app), the target path for the crash-logs
+// row, the container path as a fallback.
+// cl_cache_merge_items merges fresh measurements into the current list:
+// a fresh row for the same key REPLACES the cached row in place (carrying
+// the user's selection over), a genuinely new row is appended, and the
+// result is sorted by bytes descending. *replacedOut (if given) gets the
+// fresh rows that replaced a cached row. *movedOut (if given) is YES when
+// any replaced row changed position after the re-sort — its own bytes
+// changed, or a new row was inserted above it. A moved row MUST NOT be
+// updated with reloadRowsAtIndexPaths (the path has to exist before AND
+// after the update, at the same index); the caller must fall back to a
+// plain reloadData for that batch.
+NSString *CLCacheItemMergeKey(CLCacheItem *item);
+NSArray<CLCacheItem *> *cl_cache_merge_items(NSArray<CLCacheItem *> *current,
+                                             NSArray<CLCacheItem *> *fresh,
+                                             NSSet<CLCacheItem *> *_Nullable *_Nullable replacedOut,
+                                             BOOL *movedOut);
+
 #ifdef CL_ACCESS_TESTING
 // Test hook: counts tree-measurement calls (CLCacheMeasureDirectory*).
 // The targets-only scan must leave it at 0.

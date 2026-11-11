@@ -717,6 +717,7 @@ forbid(cleaner, "arrayByAddingObjectsFromArray", "batch merge no longer appends 
 # to a plain reloadData, because reloadRows needs the path to exist
 # before AND after the update at the same index.
 require(ls, "objc_sync_tryEnter", "main-thread lookups never wait for the LS lock")
+forbid(ls, "#import <objc/sync.h>", "objc/sync.h is not found by the macOS SDK build (run 42931834738); the runtime functions are declared extern instead")
 require(ls, "cl_known_name_no_load_locked", "main-thread lookups read the snapshot without loading")
 require(ls, "if (NSThread.isMainThread) return;", "main thread never triggers an LS load")
 require(ls, "cl_test_ls_load_attempt_count", "load-attempt counter for the main-thread test")

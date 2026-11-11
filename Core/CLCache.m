@@ -848,10 +848,11 @@ NSArray<CLCacheItem *> *cl_cache_merge_items(NSArray<CLCacheItem *> *current,
 {
     NSMutableArray<CLCacheItem *> *merged = [(current ?: @[]) mutableCopy];
     NSMutableSet<CLCacheItem *> *replaced = [NSMutableSet new];
-    // Pre-sort index of each replaced row, in the merged array before the
-    // re-sort. A replaced row's pre-sort index is its index in the table
-    // before this batch; its post-sort index is its index after.
-    NSMutableDictionary<CLCacheItem *, NSNumber *> *preSortIndex = [NSMutableDictionary new];
+    // Pre-sort index of each replaced row, keyed by its merge key (the
+    // item itself cannot be a dictionary key: CLCacheItem is not
+    // NSCopying). A replaced row's pre-sort index is its index in the
+    // table before this batch; its post-sort index is its index after.
+    NSMutableDictionary<NSString *, NSNumber *> *preSortIndex = [NSMutableDictionary new];
     for (CLCacheItem *item in fresh) {
         NSString *key = CLCacheItemMergeKey(item);
         NSUInteger existing = [merged indexOfObjectPassingTest:^BOOL(CLCacheItem *it, NSUInteger __unused i, BOOL * __unused s) {
@@ -861,7 +862,7 @@ NSArray<CLCacheItem *> *cl_cache_merge_items(NSArray<CLCacheItem *> *current,
             item.selected = merged[existing].selected;
             merged[existing] = item;
             [replaced addObject:item];
-            preSortIndex[item] = @(existing);
+            preSortIndex[key] = @(existing);
         } else {
             [merged addObject:item];
         }
@@ -872,7 +873,8 @@ NSArray<CLCacheItem *> *cl_cache_merge_items(NSArray<CLCacheItem *> *current,
     BOOL moved = NO;
     for (CLCacheItem *item in replaced) {
         NSUInteger after = [sorted indexOfObjectIdenticalTo:item];
-        if (after == NSNotFound || after != preSortIndex[item].unsignedIntegerValue) { moved = YES; break; }
+        NSNumber *before = preSortIndex[CLCacheItemMergeKey(item)];
+        if (after == NSNotFound || !before || after != before.unsignedIntegerValue) { moved = YES; break; }
     }
     if (replacedOut) *replacedOut = [replaced copy];
     if (movedOut) *movedOut = moved;

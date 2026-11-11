@@ -8,10 +8,17 @@
 #import "CLLaunchServices.h"
 #import "CLGrant.h"
 #import "CLScan.h"
-#import <objc/sync.h>
 #import <stdlib.h>
 #import <string.h>
 #import <sys/stat.h>
+
+// objc_sync_tryEnter / objc_sync_exit are the non-blocking / release forms
+// of the @synchronized lock. They are declared in <objc/sync.h>, which
+// the macOS SDK build cannot find (run 42931834738: fatal error), so they
+// are declared here instead — both symbols are exported by libobjc on iOS
+// and macOS, and the declarations match the runtime's.
+extern bool objc_sync_tryEnter(id obj);
+extern void objc_sync_exit(id obj);
 
 #pragma mark - App names from the LaunchServices database
 

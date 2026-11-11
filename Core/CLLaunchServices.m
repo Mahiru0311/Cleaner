@@ -13,12 +13,20 @@
 #import <sys/stat.h>
 
 // objc_sync_tryEnter / objc_sync_exit are the non-blocking / release forms
-// of the @synchronized lock. They are declared in <objc/sync.h>, which
-// the macOS SDK build cannot find (run 42931834738: fatal error), so they
-// are declared here instead — both symbols are exported by libobjc on iOS
-// and macOS, and the declarations match the runtime's.
-extern bool objc_sync_tryEnter(id obj);
-extern void objc_sync_exit(id obj);
+// of the @synchronized lock. The header was renamed in the Xcode 26 SDKs
+// (<objc/sync.h> no longer exists there — run 42931834738: file not found;
+// the real header is <objc/objc-sync.h>), so include whichever the SDK
+// has; the extern fallback (with _Nonnull, matching the runtime's own
+// declaration — run 42932018244: conflicting types without it) covers
+// SDKs that have neither.
+#if __has_include(<objc/objc-sync.h>)
+#import <objc/objc-sync.h>
+#elif __has_include(<objc/sync.h>)
+#import <objc/sync.h>
+#else
+extern bool objc_sync_tryEnter(id _Nonnull obj);
+extern void objc_sync_exit(id _Nonnull obj);
+#endif
 
 #pragma mark - App names from the LaunchServices database
 

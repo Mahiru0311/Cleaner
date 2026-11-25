@@ -107,9 +107,12 @@ static BOOL cl_system_supported(void)
     NSInteger major = parts.count > 0 ? parts[0].integerValue : 0;
     NSInteger minor = parts.count > 1 ? parts[1].integerValue : 0;
     NSInteger patch = parts.count > 2 ? parts[2].integerValue : 0;
-    // Supported: iOS 26.0–26.7.2 and the 27.0–27.2 line (see REFACTOR-v2.md §6).
+    // Supported: iOS 26.0–26.7.2 and 27.0–27.3 beta 1 (see REFACTOR-v2.md
+    // §17). 27.3 is allowed here on purpose: beta 1 still works, and the
+    // build-number patch check in refreshStatus — not the version —
+    // separates it from beta 2+, where Apple patched worse_query.
     if (major == 26) return minor < 7 || (minor == 7 && patch <= 2);
-    if (major == 27) return minor <= 2;
+    if (major == 27) return minor <= 3;
     return NO;
 }
 
@@ -121,6 +124,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     CLHomeStateRestricted,
     CLHomeStateUnauthorized,
     CLHomeStateUnsupported,
+    CLHomeStatePatched,
 };
 
 @interface CLHomeViewController ()
@@ -248,6 +252,17 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     CLHomeState previousState = self.state;
     if (!supported) {
         self.state = CLHomeStateUnsupported;
+    } else if (cl_worse_query_patched()) {
+        // v2.10: iOS 27.3 beta 2+ (build 24C5049d on) patched worse_query.
+        // Say so plainly instead of misdiagnosing it as a signing or
+        // App Group problem — no probe or reinstall can fix a patch.
+        self.state = CLHomeStatePatched;
+        static BOOL loggedPatch;
+        if (!loggedPatch) {
+            loggedPatch = YES;
+            cl_log(@"home: build %@ is iOS 27.3 beta 2 or later, where Apple patched worse_query",
+                   cl_os_build() ?: @"?");
+        }
     } else if (!hasGroup) {
         self.state = CLHomeStateUnauthorized;
     } else if (!self.probeDone) {
@@ -315,7 +330,24 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
             self.statusIconView.image = [UIImage systemImageNamed:@"xmark.octagon.fill"];
             self.statusIconView.tintColor = UIColor.systemRedColor;
             self.warningCard.backgroundColor = [self cardColorLight:0xF9DEDC dark:0x5C1A1A];
-            self.warningLabel.text = @"当前系统版本不在支持范围内（iOS 26.0–26.7.2 / 27.2）。";
+            self.warningLabel.text = @"当前系统版本不在支持范围内（iOS 26.0–26.7.2 / 27.0–27.3 beta 1）。";
+            self.warningCard.hidden = NO;
+            break;
+        case CLHomeStatePatched:
+            self.statusCard.backgroundColor = [self cardColorLight:0xF9DEDC dark:0x5C1A1A];
+            self.statusTitleLabel.text = @"已修复";
+            self.statusTitleLabel.textColor = UIColor.labelColor;
+            self.statusModeLabel.text = @"worse_query 已被修复";
+            self.statusModeLabel.textColor = UIColor.labelColor;
+            self.statusVersionLabel.textColor = UIColor.labelColor;
+            self.checkBadgeView.hidden = YES;
+            self.statusIconView.hidden = NO;
+            self.statusIconView.image = [UIImage systemImageNamed:@"xmark.octagon.fill"];
+            self.statusIconView.tintColor = UIColor.systemRedColor;
+            self.warningCard.backgroundColor = [self cardColorLight:0xF9DEDC dark:0x5C1A1A];
+            self.warningLabel.text = [NSString stringWithFormat:
+                @"Apple 已在 iOS 27.3 beta 2（build 24C5049d）及之后修复了 worse_query，当前系统 build %@ 不受支持。扫描和清理不可用，这不是签名或 App Group 的问题，重装也修不好。",
+                cl_os_build() ?: @"?"];
             self.warningCard.hidden = NO;
             break;
         case CLHomeStateChecking:
@@ -378,12 +410,16 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
             // Probe in flight; ignore the tap until the state is known.
             break;
         case CLHomeStateUnauthorized:
-        case CLHomeStateUnsupported: {
+        case CLHomeStateUnsupported:
+        case CLHomeStatePatched: {
             NSString *title = self.state == CLHomeStateUnauthorized
-                ? @"未获得 App Group 权限" : @"当前系统不受支持";
+                ? @"未获得 App Group 权限" : (self.state == CLHomeStatePatched
+                ? @"worse_query 已被修复" : @"当前系统不受支持");
             NSString *message = self.state == CLHomeStateUnauthorized
                 ? @"Cleaner 需要 App Group 才能访问其它应用的容器。请用保留 App Group 的方式重新签名安装（AltStore / SideStore 会自动创建）。仍可前往清理页查看，但扫描会失败。"
-                : @"当前系统版本不在支持范围内（iOS 26.0–26.7.2 / 27.2），worse_query 可能已被修复。仍可前往清理页查看，但扫描会失败。";
+                : (self.state == CLHomeStatePatched
+                ? [NSString stringWithFormat:@"Apple 已在 iOS 27.3 beta 2（build 24C5049d）及之后修复了 worse_query，当前系统 build %@ 不受支持。这不是签名问题，重装也修不好。仍可前往清理页查看，但扫描会失败。", cl_os_build() ?: @"?"]
+                : @"当前系统版本不在支持范围内（iOS 26.0–26.7.2 / 27.0–27.3 beta 1），worse_query 可能已被修复。仍可前往清理页查看，但扫描会失败。");
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message
                                                                     preferredStyle:UIAlertControllerStyleAlert];
             [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -648,7 +684,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
         [self makeInfoRowWithIcon:@"lock.shield.fill" title:@"App Group 状态"
                        valueLabel:self.groupStatusValueLabel],
         [self makeInfoRowWithIcon:@"checkmark.shield.fill" title:@"支持范围"
-                       valueLabel:[self makeLabel:@"iOS 26.0–26.7.2 / 27.2"
+                       valueLabel:[self makeLabel:@"iOS 26.0–26.7.2 / 27.0–27.3 beta 1"
                                              font:[UIFont systemFontOfSize:15] color:UIColor.secondaryLabelColor]],
     ];
     UIStackView *infoStack = [[UIStackView alloc] initWithArrangedSubviews:rows];

@@ -10,6 +10,23 @@ static void check(BOOL ok, NSString *name)
 int main(void)
 {
     @autoreleasepool {
+        // v2.10: iOS 27.3 beta 2 patched worse_query (WQFiles e3b31d8).
+        // Beta 1 (24C5037i) still works; beta 2 (24C5049d) and everything
+        // later does not — including the 27.3 release train (24C builds
+        // below 5000) and later trains/iOS versions.
+        check(!CLWorseQueryPatchedBuild(@"24C5037i"), @"27.3 beta 1 (24C5037i) still works");
+        check(!CLWorseQueryPatchedBuild(@"24C5048a"), @"24C beta just below the patch still works");
+        check(CLWorseQueryPatchedBuild(@"24C5049d"), @"27.3 beta 2 (24C5049d) is patched");
+        check(CLWorseQueryPatchedBuild(@"24C5100a"), @"later 24C beta is patched");
+        check(CLWorseQueryPatchedBuild(@"24C100"), @"27.3 release build is patched");
+        check(!CLWorseQueryPatchedBuild(@"24B5000a"), @"27.2 train (24B) is not patched");
+        check(CLWorseQueryPatchedBuild(@"24D100"), @"later train (24D) is patched");
+        check(!CLWorseQueryPatchedBuild(@"23A5000a"), @"older major (23A) is not patched");
+        check(CLWorseQueryPatchedBuild(@"25A100"), @"later major (25A) is patched");
+        check(!CLWorseQueryPatchedBuild(@""), @"empty build is not patched");
+        check(!CLWorseQueryPatchedBuild(@"24C"), @"build without a number is not patched");
+        check(!CLWorseQueryPatchedBuild(nil), @"nil build is not patched");
+
         NSFileManager *fm = NSFileManager.defaultManager;
         NSString *base = [NSTemporaryDirectory().stringByResolvingSymlinksInPath stringByAppendingPathComponent:
                           [@"CLAccessSafetyTests-" stringByAppendingString:NSUUID.UUID.UUIDString]];

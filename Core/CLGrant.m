@@ -27,6 +27,7 @@
 #import <stdatomic.h>
 #import <sys/clonefile.h>
 #import <sys/stat.h>
+#import <sys/sysctl.h>
 #import <sys/mount.h>
 #import <sys/xattr.h>
 #import <unistd.h>
@@ -167,6 +168,19 @@ BOOL cl_system_areas_reachable(void)
     // parent only on iOS 27; on iOS 26 it reaches the individual app,
     // extension, daemon and app group containers.
     return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27;
+}
+
+NSString *cl_os_build(void)
+{
+    char build[32] = {0};
+    size_t len = sizeof(build) - 1;
+    return sysctlbyname("kern.osversion", build, &len, NULL, 0) == 0 ? @(build) : nil;
+}
+
+BOOL cl_worse_query_patched(void)
+{
+    NSString *build = cl_os_build();
+    return build ? CLWorseQueryPatchedBuild(build) : NO;
 }
 
 static int64_t cl_query(NSString *target, BOOL altFlags)

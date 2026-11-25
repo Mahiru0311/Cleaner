@@ -7,6 +7,30 @@
 #import <stdlib.h>
 #import <sys/stat.h>
 
+// Apple patched worse_query in iOS 27.3 beta 2 (build 24C5049d; beta 1 was
+// 24C5037i and still works). Ported from WQAccessSafety.h
+// (WQWorseQueryPatchedBuild, kolbicz/WQFiles commit e3b31d8, v0.9.15,
+// GPL-3.0-or-later). `build` is kern.osversion, e.g. "24C5049d": iOS
+// major - 3 as a number, a letter per minor-release train, then the build
+// (betas 5xxx, releases below 1000). Patched: every later train and iOS,
+// and in the 24C train every build except betas before 24C5049. NO for an
+// unreadable build.
+static inline BOOL CLWorseQueryPatchedBuild(NSString *build)
+{
+    const char *s = build.UTF8String;
+    if (!s) return NO;
+    int major = 0, number = 0, digits = 0;
+    while (*s >= '0' && *s <= '9') { major = major * 10 + (*s++ - '0'); digits++; }
+    if (!digits || *s < 'A' || *s > 'Z') return NO;
+    char train = *s++;
+    digits = 0;
+    while (*s >= '0' && *s <= '9' && digits < 6) { number = number * 10 + (*s++ - '0'); digits++; }
+    if (!digits) return NO;
+    if (major != 24) return major > 24;
+    if (train != 'C') return train > 'C';
+    return !(number >= 5000 && number < 5049);
+}
+
 // Checks every existing component, including the final component when present,
 // without following links. A missing final component is allowed for scan-time
 // snapshots, but a missing ancestor is never accepted.

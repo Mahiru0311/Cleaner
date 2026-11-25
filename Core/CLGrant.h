@@ -38,6 +38,15 @@ BOOL cl_grant(NSString *path);
 // or the App Groups parent folder (only the individual containers).
 BOOL cl_system_areas_reachable(void);
 
+// The device's build number (kern.osversion, e.g. "24C5049d"), or nil when
+// it cannot be read.
+NSString *_Nullable cl_os_build(void);
+
+// YES on iOS 27.3 beta 2 or later, where Apple patched worse_query
+// (WQFiles e3b31d8). A patched device must be told so at launch instead
+// of being misdiagnosed as a signing or App Group problem.
+BOOL cl_worse_query_patched(void);
+
 // lstat with access retry. Returns NO if the item does not exist.
 BOOL cl_stat(NSString *path, struct stat *st);
 

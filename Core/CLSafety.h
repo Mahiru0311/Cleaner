@@ -245,6 +245,75 @@ static inline BOOL CLWriteBytes(int fd, NSData *data)
     return fsync(fd) == 0;
 }
 
+// SQLite database sets (v2.10, ported from WQAccess.m, kolbicz/WQFiles
+// commit ca6d80e, v0.9.20, GPL-3.0-or-later). A database is a set — the
+// file itself plus -wal/-shm/-journal — and the set is only ever changed
+// together: an app with a database open locks the file and -shm but not
+// -wal, so changing one file of a live set loses its newest committed
+// rows. A non-blocking flock meeting that lock fails with EWOULDBLOCK
+// (errno 35); the refusal says so in plain words and names the app to
+// quit first, instead of surfacing "errno 35".
+static inline NSArray<NSString *> *CLSQLiteCompanionSuffixes(void)
+{
+    return @[@"-wal", @"-shm", @"-journal"];
+}
+
+static inline NSString *CLSQLiteFamilyBase(NSString *name)
+{
+    for (NSString *suffix in CLSQLiteCompanionSuffixes()) {
+        if (name.length > suffix.length && [name hasSuffix:suffix]) return [name substringToIndex:name.length - suffix.length];
+    }
+    return name;
+}
+
+static inline BOOL CLSQLiteIsCompanion(NSString *name)
+{
+    return ![CLSQLiteFamilyBase(name) isEqualToString:name];
+}
+
+// Whether another process holds a lock on the regular file at `path`. A
+// file that can't be opened (missing, refused) is not "in use": the
+// operation itself reports why it fails. Only this probe's own lock is
+// ever taken, and it is released at once.
+static inline BOOL CLSQLiteLockedByOther(NSString *path)
+{
+    const char *p = path.fileSystemRepresentation;
+    int fd = CLOpenRegularAt(AT_FDCWD, p, O_RDONLY, 0);
+    if (fd < 0) return NO;
+    BOOL locked = flock(fd, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK;
+    close(fd);
+    return locked;
+}
+
+// The locked member of the set `path` belongs to (itself or a sibling),
+// or nil when no member is locked.
+static inline NSString *CLSQLiteFamilyLockedMember(NSString *path)
+{
+    NSString *dir = path.stringByDeletingLastPathComponent;
+    NSString *base = CLSQLiteFamilyBase(path.lastPathComponent);
+    NSMutableArray<NSString *> *names = [NSMutableArray arrayWithObject:base];
+    for (NSString *suffix in CLSQLiteCompanionSuffixes()) [names addObject:[base stringByAppendingString:suffix]];
+    for (NSString *name in names) {
+        if (CLSQLiteLockedByOther([dir stringByAppendingPathComponent:name])) return name;
+    }
+    return nil;
+}
+
+static inline NSString *CLSQLiteFamilyRefusalText(NSString *name, NSString *lockedName)
+{
+    if (!lockedName) return nil;
+    if ([lockedName isEqualToString:name])
+        return @"另一个应用正在使用此文件并已将其锁定，请先退出该应用再试。";
+    return [NSString stringWithFormat:
+            @"未更改：%@ 属于同一 SQLite 数据库，另一个应用正在使用它，这些文件只能一起更改。请先退出该应用再试。",
+            lockedName];
+}
+
+static inline NSString *CLSQLiteFamilyRefusal(NSString *path)
+{
+    return CLSQLiteFamilyRefusalText(path.lastPathComponent, CLSQLiteFamilyLockedMember(path));
+}
+
 // A durable intent file precedes the rename. The preserved directory itself is
 // never removed. Recovery accepts only our exact symlink or the original inode.
 //

@@ -12,8 +12,12 @@
 #import "CLLaunchServices.h"
 
 #import "CLAppSupport.h"
+#import "CLSafety.h"
+#import <dirent.h>
 #import <errno.h>
+#import <fcntl.h>
 #import <sys/stat.h>
+#import <unistd.h>
 
 @implementation CLAppItem
 @end
@@ -384,6 +388,94 @@ BOOL cl_dir_size_cancellable(NSString *dir, CLScanCancellation *cancellation,
     return YES;
 }
 
+// v2.10 (WQFiles ca6d80e): the locked member of a SQLite set in a tree,
+// as a path relative to the tree root, or nil when no set is in use. The
+// walk is fd-based (openat, never follow links), like the measure walk,
+// and the lock probe itself is fd-relative too, so no path is ever
+// resolved twice. Only families with a companion file are probed: a lone
+// database with no -wal/-shm/-journal has no set to keep together, and
+// probing every file would refuse restores for unrelated lock files. A
+// lock can only be observed on a set member anyway — in WAL mode an open
+// database has -shm, in journal mode an active write has -journal.
+static NSString *cl_sqlite_locked_member_in_dir(int dirfd, NSString *name)
+{
+    NSString *base = CLSQLiteFamilyBase(name);
+    NSMutableArray<NSString *> *names = [NSMutableArray arrayWithObject:base];
+    for (NSString *suffix in CLSQLiteCompanionSuffixes()) [names addObject:[base stringByAppendingString:suffix]];
+    for (NSString *member in names) {
+        int fd = openat(dirfd, member.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) continue;
+        BOOL locked = flock(fd, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK;
+        close(fd);
+        if (locked) return member;
+    }
+    return nil;
+}
+
+static NSString *cl_sqlite_locked_member_at(int dirfd, NSString *relativeDir)
+{
+    int listing = dup(dirfd);
+    if (listing < 0) return nil;
+    DIR *dir = fdopendir(listing);
+    if (!dir) { close(listing); return nil; }
+    NSMutableSet<NSString *> *probedBases = [NSMutableSet new];
+    NSString *found = nil;
+    for (;;) {
+        if (found) break;
+        errno = 0;
+        struct dirent *entry = readdir(dir);
+        if (!entry) break;
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        NSString *name = [NSFileManager.defaultManager stringWithFileSystemRepresentation:entry->d_name
+                                                                                  length:strlen(entry->d_name)];
+        if (!name) continue;
+        struct stat st;
+        if (fstatat(dirfd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            int child = openat(dirfd, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+            if (child < 0) continue;
+            NSString *childRelative = relativeDir.length
+                ? [relativeDir stringByAppendingPathComponent:name] : name;
+            found = cl_sqlite_locked_member_at(child, childRelative);
+            close(child);
+            continue;
+        }
+        if (!S_ISREG(st.st_mode)) continue;
+        NSString *base = CLSQLiteFamilyBase(name);
+        if ([probedBases containsObject:base]) continue;
+        [probedBases addObject:base];
+        BOOL isSet = CLSQLiteIsCompanion(name);
+        if (!isSet) {
+            for (NSString *suffix in CLSQLiteCompanionSuffixes()) {
+                struct stat companion;
+                if (fstatat(dirfd, [base stringByAppendingString:suffix].fileSystemRepresentation,
+                            &companion, AT_SYMLINK_NOFOLLOW) == 0) { isSet = YES; break; }
+            }
+        }
+        if (!isSet) continue;
+        NSString *locked = cl_sqlite_locked_member_in_dir(dirfd, name);
+        if (locked) {
+            found = relativeDir.length
+                ? [relativeDir stringByAppendingPathComponent:locked] : locked;
+        }
+    }
+    closedir(dir);
+    return found;
+}
+
+// The locked SQLite family member in the tree at `dir` (path relative to
+// `dir`, e.g. "Library/foo.db"), or nil. A missing or inaccessible tree
+// reports nothing: the copy/purge reports the access failure itself.
+static NSString *cl_sqlite_locked_member_in_tree(NSString *dir)
+{
+    if (!dir.length) return nil;
+    int fd = cl_open_directory(dir);
+    if (fd < 0) return nil;
+    NSString *found = cl_sqlite_locked_member_at(fd, dir.lastPathComponent);
+    close(fd);
+    return found;
+}
+
 static BOOL cl_replace_part(NSString *src, NSString *dst, NSString **error)
 {
     // Stage the source before purging the live destination. If a named safety
@@ -667,7 +759,25 @@ void cl_restore_app(CLAppItem *app, NSString *backup, NSString **title, NSString
         *message = [NSString stringWithFormat:@"所选应用的容器已不再安全（%@）。什么都没改。", error];
         return;
     }
-    // 2. Keep the current data and a durable recovery journal before touching
+    // 2. (v2.10, WQFiles ca6d80e) Refuse while the app is running with a
+    // SQLite database open: purging and replacing its files under it
+    // loses committed rows, and a restore over live data can report
+    // success over a torn result. Nothing has been changed yet, so the
+    // refusal is a plain early return — no journal, no rollback. (The
+    // -wal/-shm reset on restore is already structural here: the live
+    // part is purged whole and cl_purge_and_verify checks the directory
+    // is empty before anything is copied back, so no stale companion
+    // can survive a restore that gets this far.)
+    for (NSString *part in cl_app_backup_parts()) {
+        NSString *locked = cl_sqlite_locked_member_in_tree([app.container stringByAppendingPathComponent:part]);
+        if (locked) {
+            *title = @"未能恢复";
+            *message = [NSString stringWithFormat:@"%@ 正在被 %@ 使用（SQLite 数据库已打开），请先退出该应用再试。什么都没改。",
+                        locked, app.name];
+            return;
+        }
+    }
+    // 3. Keep the current data and a durable recovery journal before touching
     // anything, so both ordinary failures and process termination are covered.
     NSString *safety = cl_make_app_backup(app.bundleID, app.container, app.containerDevice,
                                            app.containerInode, kCLBackupReasonBeforeRestore, &error);
@@ -683,7 +793,7 @@ void cl_restore_app(CLAppItem *app, NSString *backup, NSString **title, NSString
                     error ?: @"恢复记录无法写入", safety.lastPathComponent];
         return;
     }
-    // 3. Re-read and validate the selected backup immediately before the first
+    // 4. Re-read and validate the selected backup immediately before the first
     // mutation. A changed or incomplete source fails closed and retains the
     // journal/safety material.
     error = nil;
@@ -771,6 +881,15 @@ BOOL cl_clear_app_data(CLAppItem *app, unsigned long long *freedOut, NSString **
     BOOL ok = cl_validate_container(app.container, app.bundleID, app.containerDevice, app.containerInode, &error);
     for (NSString *part in cl_app_data_parts()) {
         if (!ok) break;
+        // v2.10 (WQFiles ca6d80e): same gate as restore — never purge a
+        // live SQLite set out from under a running app.
+        NSString *locked = cl_sqlite_locked_member_in_tree([app.container stringByAppendingPathComponent:part]);
+        if (locked) {
+            error = [NSString stringWithFormat:@"%@ 正在被 %@ 使用（SQLite 数据库已打开），请先退出该应用再试。",
+                     locked, app.name];
+            ok = NO;
+            break;
+        }
         if (!cl_validate_container(app.container, app.bundleID, app.containerDevice, app.containerInode, &error) ||
             !cl_purge_and_verify([app.container stringByAppendingPathComponent:part], &freed, &error)) ok = NO;
     }

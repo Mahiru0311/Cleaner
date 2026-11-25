@@ -27,6 +27,49 @@ int main(void)
         check(!CLWorseQueryPatchedBuild(@"24C"), @"build without a number is not patched");
         check(!CLWorseQueryPatchedBuild(nil), @"nil build is not patched");
 
+        // v2.10: SQLite database sets (WQFiles ca6d80e). An app with a
+        // database open locks the file and -shm but not -wal, so the
+        // whole set is refused together and the refusal names the app to
+        // quit, not errno 35.
+        check([CLSQLiteFamilyBase(@"a.sqlite-wal") isEqualToString:@"a.sqlite"] &&
+              [CLSQLiteFamilyBase(@"a.sqlite-shm") isEqualToString:@"a.sqlite"] &&
+              [CLSQLiteFamilyBase(@"a.db-journal") isEqualToString:@"a.db"] &&
+              [CLSQLiteFamilyBase(@"a.sqlite") isEqualToString:@"a.sqlite"] &&
+              [CLSQLiteFamilyBase(@"-wal") isEqualToString:@"-wal"], @"SQLite set base names");
+        check(CLSQLiteIsCompanion(@"a.sqlite-wal") && !CLSQLiteIsCompanion(@"a.sqlite"),
+              @"companion detection");
+        NSString *liveDir = [NSTemporaryDirectory().stringByResolvingSymlinksInPath
+                             stringByAppendingPathComponent:
+                             [@"CLSQLiteFamily-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+        check([fm createDirectoryAtPath:liveDir withIntermediateDirectories:YES attributes:nil error:nil],
+              @"create SQLite set fixture");
+        @try {
+            NSString *db = [liveDir stringByAppendingPathComponent:@"analytics.sqlite"];
+            NSString *wal = [db stringByAppendingString:@"-wal"];
+            NSString *shm = [db stringByAppendingString:@"-shm"];
+            check([@"db" writeToFile:db atomically:YES encoding:NSUTF8StringEncoding error:nil], @"write db fixture");
+            check([@"wal" writeToFile:wal atomically:YES encoding:NSUTF8StringEncoding error:nil], @"write wal fixture");
+            check([@"shm" writeToFile:shm atomically:YES encoding:NSUTF8StringEncoding error:nil], @"write shm fixture");
+            check(CLSQLiteFamilyLockedMember(wal) == nil && CLSQLiteFamilyRefusal(db) == nil,
+                  @"idle SQLite set is not in use");
+            int app = open(db.fileSystemRepresentation, O_RDWR);
+            check(app >= 0 && flock(app, LOCK_EX | LOCK_NB) == 0, @"hold the database lock like a running app");
+            check([CLSQLiteFamilyLockedMember(wal) isEqualToString:@"analytics.sqlite"],
+                  @"the locked member of the set is named");
+            check([CLSQLiteFamilyRefusal(db) containsString:@"请先退出该应用"],
+                  @"a locked database is refused with a readable reason, not errno 35");
+            check(![CLSQLiteFamilyRefusal(db) containsString:@"errno"],
+                  @"the refusal never mentions errno");
+            NSString *walRefusal = CLSQLiteFamilyRefusal(wal);
+            check(walRefusal != nil && [walRefusal containsString:@"analytics.sqlite"] &&
+                  ![walRefusal containsString:@"errno"],
+                  @"the unlocked -wal of a database in use is refused as part of the set");
+            close(app);
+            check(CLSQLiteFamilyLockedMember(wal) == nil, @"the set is free once the app lets go");
+        } @finally {
+            [fm removeItemAtPath:liveDir error:nil];
+        }
+
         NSFileManager *fm = NSFileManager.defaultManager;
         NSString *base = [NSTemporaryDirectory().stringByResolvingSymlinksInPath stringByAppendingPathComponent:
                           [@"CLAccessSafetyTests-" stringByAppendingString:NSUUID.UUID.UUIDString]];

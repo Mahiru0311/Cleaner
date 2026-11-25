@@ -43,10 +43,59 @@ static void TestRestorePlanning(void)
     CLCheck(![neither[@"Documents"] boolValue] && ![neither[@"Library"] boolValue]);
 }
 
+static void TestSQLiteLockedTree(void)
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *base = [NSTemporaryDirectory().stringByResolvingSymlinksInPath stringByAppendingPathComponent:
+                      [@"CLSQLiteGate-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    NSString *library = [base stringByAppendingPathComponent:@"Library"];
+    NSString *sub = [library stringByAppendingPathComponent:@"Application Support"];
+    NSError *error = nil;
+    CLCheck([fm createDirectoryAtPath:sub withIntermediateDirectories:YES attributes:nil error:&error]);
+    NSString *db = [sub stringByAppendingPathComponent:@"analytics.sqlite"];
+    NSString *wal = [db stringByAppendingString:@"-wal"];
+    NSString *shm = [db stringByAppendingString:@"-shm"];
+    CLCheck([@"db" writeToFile:db atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    CLCheck([@"wal" writeToFile:wal atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    CLCheck([@"shm" writeToFile:shm atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    // Idle set: nothing locked, nothing refused — even nested.
+    CLCheck(cl_sqlite_locked_member_in_tree(library) == nil);
+    // A running app holds the database lock: the gate names the member,
+    // with its path relative to the container part.
+    int app = open(db.fileSystemRepresentation, O_RDWR);
+    CLCheck(app >= 0 && flock(app, LOCK_EX | LOCK_NB) == 0);
+    NSString *locked = cl_sqlite_locked_member_in_tree(library);
+    CLCheck(locked != nil && [locked isEqualToString:@"Library/Application Support/analytics.sqlite"]);
+    close(app);
+    CLCheck(cl_sqlite_locked_member_in_tree(library) == nil);
+
+    // A lone database with no companions is not a set: even locked, it
+    // does not trip the gate (nothing to keep together).
+    NSString *lone = [sub stringByAppendingPathComponent:@"lone.db"];
+    CLCheck([@"lone" writeToFile:lone atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    int loneFd = open(lone.fileSystemRepresentation, O_RDWR);
+    CLCheck(loneFd >= 0 && flock(loneFd, LOCK_EX | LOCK_NB) == 0);
+    CLCheck(cl_sqlite_locked_member_in_tree(library) == nil);
+    close(loneFd);
+
+    // An unrelated locked file is not a database set either.
+    NSString *other = [sub stringByAppendingPathComponent:@"other.lock"];
+    CLCheck([@"lock" writeToFile:other atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    int otherFd = open(other.fileSystemRepresentation, O_RDWR);
+    CLCheck(otherFd >= 0 && flock(otherFd, LOCK_EX | LOCK_NB) == 0);
+    CLCheck(cl_sqlite_locked_member_in_tree(library) == nil);
+    close(otherFd);
+
+    // A missing part reports nothing (the copy/purge reports access).
+    CLCheck(cl_sqlite_locked_member_in_tree([base stringByAppendingPathComponent:@"NoSuchPart"]) == nil);
+    [fm removeItemAtPath:base error:nil];
+}
+
 int main(void)
 {
     @autoreleasepool {
         TestRestorePlanning();
+        TestSQLiteLockedTree();
         if (failures) {
             fprintf(stderr, "%d regression check(s) failed\n", failures);
             return 1;

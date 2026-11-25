@@ -17,6 +17,15 @@
       "tintColor": "#1E8FC7",
       "versions": [
         {
+          "version": "0.2.10",
+          "buildVersion": "10",
+          "date": "2026-11-25",
+          "size": 227255,
+          "downloadURL": "https://raw.githubusercontent.com/Mahiru0311/Cleaner/main/releases/Cleaner-0.2.10.ipa",
+          "localizedDescription": "v2.10：上游补丁合集——识别 iOS 27.3 beta 2 的 worse_query 修复、崩溃日志走真实路径、SQLite 数据库整组保护、Access 缓存自动修复、单字 bundle ID。",
+          "minOSVersion": "26.0"
+        },
+        {
           "version": "0.2.9",
           "buildVersion": "9",
           "date": "2026-11-14",

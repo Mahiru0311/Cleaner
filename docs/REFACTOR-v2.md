@@ -1108,7 +1108,15 @@ Erosion 美化；3105 的 MobileHouseArrest + 企业证书容器法；任何越�
 
 ### 构建
 
-（构建成功后补：run id、IPA 路径/大小/SHA、亲验结果。）
+- GitHub Actions run **45655613334**（head `e337376`），completed / success。之前两跑（45653259203、45653475053）失败于 `tests/CLSafetyTests.m:44` 的 `fm` 未声明，修法是把 `NSFileManager *fm` 提到 `main` 顶部、删重复声明（commit `78999d5`→`e337376`）。
+- IPA：`~/workspace/downloads/cleaner-v2-10-ipa/Cleaner.ipa`，**227,255 字节**，SHA-256 `13cdb87f60edb164d00209d10cc5831bd9378405d2d9bc465c143559776caaf2`。
+- 亲验发版包（已解压核对）：
+  - 9 个文件（4 图标 + 主二进制 + Info.plist + Metadata.appintents 2 件 + CodeResources），无 `.appex`。
+  - Info.plist：`0.2.10` / build `10` / MinimumOS `26.0` / zh_CN / UIDeviceFamily `[1]` / Portrait / `cleaner://` / `com.mahiru.cleaner`。
+  - `tests/check_appintents_metadata.py` 通过：CleanCacheIntent（discoverable、background）+ CleanerShortcuts（2 phrases）；extract.actionsdata 1,795 字节（与 v2.7–v2.9 相同），version.json toolsVersion 26.6 / version 3.0。
+  - 主二进制 579,424 字节（v2.9 是 562,880，+16,544；仍在 <500KB 二进制目标之上，IPA 227,255 字节仍在 <250KB 目标内——如实记录）。
+  - 二进制内确认：App Group `group.com.mahiru.cleaner`（3 处）、`tryLock`、崩溃日志 mobile 路径、自动修复日志 `grant: access cache repaired automatically`、补丁日志与新首页文案（中文字符串以 UTF-16 存，UTF-8 搜不到属正常）、SQLite 拒绝文案、设置文件夹禁令字面。
+  - `source.json` 已加 0.2.10 条目（`scripts/update_source.py` 生成后改回 raw 路线：`https://raw.githubusercontent.com/Mahiru0311/Cleaner/main/releases/Cleaner-0.2.10.ipa`，与 v2.9 一致；`test_update_source.py` 8 个通过）。IPA 文件本身随合并进 main 时才放到 `main/releases/`——合并是父任务的事，不在本分支做。
 
 ### 真机验证仍未做
 

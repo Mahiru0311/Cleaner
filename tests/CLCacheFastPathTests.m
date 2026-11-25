@@ -106,6 +106,27 @@ int main(void)
             check(loadedLogs.crashLogs, @"crash-log row survives the round-trip");
             check(loadedLogs.targets.count == 1 && [loadedLogs.targets[0] isEqualToString:CLCrashLogsPath],
                   @"crash-log row keeps its target for the row key");
+            // v2.10: a crash-log row scanned at the real mobile path keeps
+            // that path, so the refresh merges on the same key instead of
+            // duplicating the row; a foreign saved target falls back.
+            logs.targets = @[@"/private/var/mobile/Library/Logs/CrashReporter"];
+            cl_cache_save_items(@[app, logs], 2);
+            loaded = cl_cache_load_items(&savedAt);
+            check(loaded.count == 2, @"crash-log row with the mobile path loads back");
+            loadedLogs = loaded[1];
+            check([loadedLogs.targets[0] isEqualToString:@"/private/var/mobile/Library/Logs/CrashReporter"],
+                  @"crash-log row keeps the scanned mobile path");
+            NSMutableDictionary *savedPlist = [[NSDictionary dictionaryWithContentsOfFile:itemsPath] mutableCopy];
+            NSMutableArray *savedRows = [savedPlist[@"items"] mutableCopy];
+            NSMutableDictionary *savedLogsRow = [savedRows[1] mutableCopy];
+            savedLogsRow[@"targetPath"] = @"/tmp/not-a-crash-folder";
+            savedRows[1] = savedLogsRow;
+            savedPlist[@"items"] = savedRows;
+            check([savedPlist writeToFile:itemsPath atomically:YES], @"rewrite items plist with a foreign crash target");
+            loaded = cl_cache_load_items(&savedAt);
+            check(loaded.count == 2, @"crash-log row with a foreign target still loads");
+            check([loaded[1].targets[0] isEqualToString:CLCrashLogsPath],
+                  @"foreign saved crash target falls back to the known path");
 
             // --- Corrupt file loads as empty, never as a crash. ---
             check([@"garbage" writeToFile:itemsPath atomically:YES encoding:NSUTF8StringEncoding error:nil],

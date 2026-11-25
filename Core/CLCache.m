@@ -541,6 +541,15 @@ BOOL cl_clean_matching_files(NSString *container, NSArray<NSString *> *extension
 NSString *const CLCrashLogsPath =
     @"/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.osanalytics/Library/Logs/CrashReporter";
 
+// v2.10 (WQFiles 8608753, v0.9.14): where iOS keeps crash and diagnostic
+// reports — mobile's Library first (the paths in the OS's own code), the
+// osanalytics system group second. That folder does not exist on
+// iOS 27.0.1, which made Crash Logs "limited" forever.
+static NSArray<NSString *> *CLCrashLogCandidates(void)
+{
+    return @[@"/private/var/mobile/Library/Logs/CrashReporter", CLCrashLogsPath];
+}
+
 @implementation CLCacheTargetRecord
 @end
 
@@ -772,13 +781,19 @@ void cl_cache_save_items(NSArray<CLCacheItem *> *items, NSUInteger totalApps)
         // Crash-log rows have no containerPath (they key off their target);
         // app rows without one are not real rows.
         if (!it.crashLogs && !it.containerPath.length) continue;
-        [rows addObject:@{ @"name": it.name,
+        // v2.10: crash-log rows carry the target path they were scanned
+        // with, so a refresh merges on the same key instead of duplicating
+        // the row (the scan may find the mobile path while an older saved
+        // row still names the system-group path).
+        NSMutableDictionary *row = [@{ @"name": it.name,
                            @"bundleID": it.bundleID ?: @"",
                            @"containerPath": it.containerPath ?: @"",
                            @"cacheBytes": @(it.cacheBytes), @"tempBytes": @(it.tempBytes),
                            @"cacheKnown": @(it.cacheKnown), @"tempKnown": @(it.tempKnown),
                            @"limited": @(it.limited), @"crashLogs": @(it.crashLogs),
-                           @"selected": @(it.selected) }];
+                           @"selected": @(it.selected) } mutableCopy];
+        if (it.crashLogs && it.targets.firstObject.length) row[@"targetPath"] = it.targets.firstObject;
+        [rows addObject:row];
     }
     NSDictionary *plist = @{ @"version": @(kCLItemsCacheVersion),
                              @"savedAt": @(NSDate.date.timeIntervalSinceReferenceDate),
@@ -821,8 +836,15 @@ NSArray<CLCacheItem *> *cl_cache_load_items(NSTimeInterval *savedAtOut)
         it.crashLogs = crashLogs;
         it.selected = [row[@"selected"] boolValue];
         // Crash-log rows carry their target for the row key; app rows
-        // carry no target records (display-only, never cleanable).
-        if (it.crashLogs) it.targets = @[CLCrashLogsPath];
+        // carry no target records (display-only, never cleanable). The
+        // saved target wins when it is a known crash-log folder; older
+        // rows without one fall back to the system-group path.
+        if (it.crashLogs) {
+            NSString *savedTarget = row[@"targetPath"];
+            it.targets = @[[savedTarget isKindOfClass:NSString.class] &&
+                           [CLCrashLogCandidates() containsObject:savedTarget]
+                           ? savedTarget : CLCrashLogsPath];
+        }
         [items addObject:it];
     }
     if (!items.count) return nil;
@@ -905,10 +927,14 @@ static BOOL CLCacheRecordIdentityMatches(CLCacheTargetRecord *record, NSString *
 
 static BOOL CLCacheCrashPathIsSafe(NSString *path)
 {
-    NSString *expected = [CLCrashLogsPath stringByStandardizingPath];
-    return [[path stringByStandardizingPath] isEqualToString:expected] &&
+    // One of the known crash-log folders, spelled exactly, with no link on
+    // the way and resolving to itself. (Compared without
+    // stringByStandardizingPath: that drops "/private" only when it can
+    // check the path, so the comparison with realpath's spelling depended
+    // on access — WQFiles 8608753.)
+    return [CLCrashLogCandidates() containsObject:path] &&
            CLSafetyHasNoSymlinkAncestry(path, YES) &&
-           [CLSafetyCanonicalPath(path) isEqualToString:expected];
+           [CLSafetyCanonicalPath(path) isEqualToString:path];
 }
 
 BOOL CLCacheValidateItem(CLCacheItem *item, NSString **reason)
@@ -1443,12 +1469,30 @@ NSArray<CLCacheItem *> *_Nullable cl_all_app_containers(
         // and measuring them is another tree walk).
         if (!ctx.skipMeasurement) {
         unsigned long long crash = 0;
-        // Crash logs are in a system group, which worse_query reaches on iOS 27
-        // only. On iOS 26 the section is left out instead of reported as limited.
-        BOOL crashReachable = cl_system_areas_reachable();
-        BOOL safeCrashPath = crashReachable && CLCacheCrashPathIsSafe(CLCrashLogsPath);
+        // v2.10 (WQFiles 8608753): the first crash-log folder that exists.
+        // worse_query reaches these on iOS 27; where none can be reached
+        // (iOS 26) or none exists, the section is left out instead of
+        // reported as limited.
+        NSString *crashPath = nil;
+        BOOL crashBlocked = NO;
+        for (NSString *candidate in CLCrashLogCandidates()) {
+            struct stat cst;
+            if (lstat(candidate.fileSystemRepresentation, &cst) != 0 &&
+                (errno == EPERM || errno == EACCES)) cl_grant(candidate);
+            if (lstat(candidate.fileSystemRepresentation, &cst) == 0) { crashPath = candidate; break; }
+            if (errno != ENOENT && errno != ENOTDIR) crashBlocked = YES;
+        }
+        BOOL crashReachable = crashPath != nil;
+        if (!crashPath) cl_log(@"cache scan: no crash log folder %@", crashBlocked ? @"could be reached" : @"exists");
+        BOOL safeCrashPath = crashReachable && CLCacheCrashPathIsSafe(crashPath);
+        // The path check reads every ancestor, which can need the folder's
+        // sandbox token first.
+        if (crashReachable && !safeCrashPath && cl_grant(crashPath))
+            safeCrashPath = CLCacheCrashPathIsSafe(crashPath);
+        if (crashReachable && !safeCrashPath)
+            cl_log(@"cache scan: Crash Logs path check failed for %@", crashPath);
         CLCacheMeasurementState crashState = !crashReachable ? CLCacheMeasurementMissing
-            : safeCrashPath ? CLCacheMeasureDirectory(CLCrashLogsPath, cancellation, &crash)
+            : safeCrashPath ? CLCacheMeasureDirectory(crashPath, cancellation, &crash)
                             : CLCacheMeasurementLimited;
         if (crashState == CLCacheMeasurementCancelled) { if (completion) completion(nil, ctx.scanLimited, @"扫描已取消。", YES, ctx.appBundleIDs.count); return; }
         if (crashState == CLCacheMeasurementLimited) {
@@ -1458,12 +1502,12 @@ NSArray<CLCacheItem *> *_Nullable cl_all_app_containers(
         if (crashState == CLCacheMeasurementLimited || crash > 0) {
             CLCacheItem *logs = [CLCacheItem new];
             logs.name = @"崩溃日志";
-            logs.targets = @[CLCrashLogsPath];
+            logs.targets = @[crashPath];
             logs.cacheBytes = crash;
             logs.cacheKnown = crashState != CLCacheMeasurementLimited;
             logs.crashLogs = YES;
             logs.limited = crashState == CLCacheMeasurementLimited;
-            logs.targetRecords = @[CLCacheTargetRecordForPath(CLCrashLogsPath, nil)];
+            logs.targetRecords = @[CLCacheTargetRecordForPath(crashPath, nil)];
             logs.selected = !logs.limited;
             [ctx.items addObject:logs];
         }

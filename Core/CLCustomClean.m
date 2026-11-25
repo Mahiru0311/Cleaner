@@ -316,6 +316,15 @@ BOOL cl_custom_clean_validate_folder_pattern(NSString *pattern, NSString **reaso
         if (reason) *reason = @"不能直接清理 Documents 或 Library 本身——请用「清空数据」（会先备份）";
         return NO;
     }
+    // v2.10 (WQFiles WQCacheCustomRelativeValid, commit a833974, v0.9.18):
+    // never purge an app's settings folders — emptying
+    // Library/Preferences would reset the app, not clean its cache.
+    NSArray<NSString *> *parts = std.pathComponents;
+    if (parts.count >= 2 && [parts[0] isEqualToString:@"Library"] &&
+        [@[@"Preferences", @"SyncedPreferences", @"Cookies", @"Saved Application State"] containsObject:parts[1]]) {
+        if (reason) *reason = @"不能清理应用的设置文件夹（Preferences、Cookies 等）";
+        return NO;
+    }
     return YES;
 }
 

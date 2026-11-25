@@ -37,6 +37,12 @@ int main(void)
             check(!cl_custom_clean_validate_folder_pattern(@"Library/../Caches", &reason), @"dot-dot folder pattern refused");
             check(!cl_custom_clean_validate_folder_pattern(@"Documents", &reason), @"Documents itself refused");
             check(!cl_custom_clean_validate_folder_pattern(@"Library", &reason), @"Library itself refused");
+            // v2.10: the app's settings folders are never purgeable (WQFiles a833974).
+            check(!cl_custom_clean_validate_folder_pattern(@"Library/Preferences", &reason), @"Library/Preferences refused");
+            check(!cl_custom_clean_validate_folder_pattern(@"Library/Preferences/com.example.app.plist", &reason), @"a file under Preferences refused");
+            check(!cl_custom_clean_validate_folder_pattern(@"Library/SyncedPreferences", &reason), @"Library/SyncedPreferences refused");
+            check(!cl_custom_clean_validate_folder_pattern(@"Library/Cookies", &reason), @"Library/Cookies refused");
+            check(!cl_custom_clean_validate_folder_pattern(@"Library/Saved Application State", &reason), @"Library/Saved Application State refused");
             check(cl_custom_clean_validate_folder_pattern(@"Library/Caches", NULL), @"Library/Caches allowed");
             check(cl_custom_clean_validate_folder_pattern(@"tmp", NULL), @"tmp allowed");
             check(cl_custom_clean_validate_folder_pattern(@"Documents/foo", NULL), @"Documents subfolder allowed (with a warning at run time)");

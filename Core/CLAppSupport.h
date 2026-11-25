@@ -27,7 +27,11 @@ static inline BOOL CLAppSupportBundleIDValid(NSString *bundleID)
         bad = [[NSCharacterSet characterSetWithCharactersInString:
                 @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"] invertedSet];
     });
-    return [bundleID containsString:@"."] && [bundleID rangeOfCharacterFromSet:bad].location == NSNotFound;
+    // No dot required: some older App Store apps have one-word bundle ids
+    // (Pinterest's is "pinterest", ifeng News' "ifengNews"). Ported from
+    // WQAppsSupport.h (WQFiles f89f5fb, v0.9.19); the length, dot-position
+    // and character checks above still keep the id a safe folder name.
+    return [bundleID rangeOfCharacterFromSet:bad].location == NSNotFound;
 }
 
 static inline BOOL CLAppSupportIsInteger(id value)

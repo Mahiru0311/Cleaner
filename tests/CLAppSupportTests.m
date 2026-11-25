@@ -105,7 +105,10 @@ static void TestBundleIdentifiers(void)
     CLCheck(CLAppSupportBundleIDValid(@"com.example.app"));
     CLCheck(CLAppSupportBundleIDValid(@"com.example-app_1"));
     CLCheck(!CLAppSupportBundleIDValid(@""));
-    CLCheck(!CLAppSupportBundleIDValid(@"nodot"));
+    CLCheck(CLAppSupportBundleIDValid(@"pinterest"));   // real one-word bundle ids (v2.10)
+    CLCheck(CLAppSupportBundleIDValid(@"ifengNews"));
+    CLCheck(!CLAppSupportBundleIDValid(@"ab"));
+    CLCheck(!CLAppSupportBundleIDValid(@"..."));
     CLCheck(!CLAppSupportBundleIDValid(@"com/example"));
     CLCheck(!CLAppSupportBundleIDValid(@"com..example"));
     CLCheck(!CLAppSupportBundleIDValid(@".com.example"));

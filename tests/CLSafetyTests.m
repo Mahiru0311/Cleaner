@@ -10,6 +10,7 @@ static void check(BOOL ok, NSString *name)
 int main(void)
 {
     @autoreleasepool {
+        NSFileManager *fm = NSFileManager.defaultManager;
         // v2.10: iOS 27.3 beta 2 patched worse_query (WQFiles e3b31d8).
         // Beta 1 (24C5037i) still works; beta 2 (24C5049d) and everything
         // later does not — including the 27.3 release train (24C builds
@@ -70,7 +71,6 @@ int main(void)
             [fm removeItemAtPath:liveDir error:nil];
         }
 
-        NSFileManager *fm = NSFileManager.defaultManager;
         NSString *base = [NSTemporaryDirectory().stringByResolvingSymlinksInPath stringByAppendingPathComponent:
                           [@"CLAccessSafetyTests-" stringByAppendingString:NSUUID.UUID.UUIDString]];
         NSString *library = [base stringByAppendingPathComponent:@"Library"];

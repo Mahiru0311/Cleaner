@@ -195,8 +195,17 @@ static int64_t cl_query(NSString *target, BOOL altFlags)
     int library = CLOpenDirectoryNoLinks(libraryPath);
     if (library < 0) return -4;
     int lock = CLOpenRegularAt(library, ".wq-caches-lock", O_RDWR | O_CREAT, 0600);
-    if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB) != 0) {
-        if (lock >= 0) close(lock);
+    if (lock < 0) {
+        // The lock file itself cannot be opened — e.g. another app
+        // sharing the App Group left a link where it belongs. That is a
+        // broken access cache (repair candidate, -10), not contention.
+        close(library);
+        return -10;
+    }
+    if (flock(lock, LOCK_EX | LOCK_NB) != 0) {
+        // Another process holds the lock: a concurrent query, not a
+        // broken cache. Do not repair under it.
+        close(lock);
         close(library);
         return -4;
     }
@@ -205,7 +214,10 @@ static int64_t cl_query(NSString *target, BOOL altFlags)
         // Keep the exact Caches swap point required by worse_query, but preserve
         // its original inode and nested contents. Next acquisition recovers an
         // interrupted swap from the durable marker, before doing another query.
+        // A swap that cannot start (-10) means the access cache is broken:
+        // cl_grant repairs it and asks again (WQFiles b6f588f).
         if (CLSwapBegin(library, target)) handle = cl_query_token(group, altFlags);
+        else handle = -10;
     } @catch (NSException *exception) {
         cl_log(@"token query exception: %@", exception.reason);
         handle = -9;
@@ -213,12 +225,48 @@ static int64_t cl_query(NSString *target, BOOL altFlags)
         if (!CLSwapRecover(library)) {
             cl_log(@"token cache recovery failed: %@; preserved contents retained", libraryPath);
             if (handle >= 0) cl_release_handle(handle);
-            handle = -8;
+            // Keep -10: a swap that could not start is a repair signal
+            // for cl_grant, even when recovery failed too.
+            if (handle != -10) handle = -8;
         }
         close(lock);
         close(library);
     }
     return handle;
+}
+
+// Repairs the access cache the way a manual reset would (nothing is
+// deleted; anything in the way is renamed aside). Called by cl_grant
+// when a query cannot start, at most once a minute.
+static BOOL cl_reset_access_cache(void)
+{
+    NSString *group = cl_app_group();
+    if (!group) return NO;
+    NSFileManager *files = NSFileManager.defaultManager;
+    NSURL *root = [files containerURLForSecurityApplicationGroupIdentifier:group];
+    if (!root) return NO;
+    NSString *libraryPath = [root.path stringByAppendingPathComponent:@"Library"];
+    if (![files createDirectoryAtPath:libraryPath withIntermediateDirectories:YES attributes:nil error:nil]) return NO;
+    int library = CLOpenDirectoryNoLinks(libraryPath);
+    if (library < 0) return NO;
+    NSMutableArray<NSString *> *done = [NSMutableArray new];
+    // Unlike token requests, repair moves a non-regular lock aside first.
+    int lock = CLCacheLockOpenForRepair(library, done);
+    if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB) != 0) {
+        int err = errno;
+        if (lock >= 0) close(lock);
+        close(library);
+        cl_log(@"access cache reset in %@: lock unavailable (%@)%@", libraryPath, cl_errno(err),
+               done.count ? [@"; " stringByAppendingString:[done componentsJoinedByString:@", "]] : @"");
+        return NO;
+    }
+    BOOL ok = CLCacheSwapReset(library, done);
+    int err = errno;
+    close(lock);
+    close(library);
+    cl_log(@"access cache reset in %@: %@%@", libraryPath, done.count ? [done componentsJoinedByString:@", "] : @"nothing to repair",
+           ok ? @"" : [@"; FAILED: " stringByAppendingString:cl_errno(err)]);
+    return ok;
 }
 
 static NSMutableDictionary<NSString *, NSNumber *> *gCLGrants;
@@ -290,6 +338,22 @@ BOOL cl_grant(NSString *path)
     static int preferAlt = -1;
     BOOL altFirst = preferAlt >= 0 ? (BOOL)preferAlt : !cl_system_areas_reachable();
     int64_t handle = cl_query(key, altFirst);
+    // A broken access cache refuses every folder until it is repaired: do
+    // what a manual reset would do (nothing is deleted; anything in the
+    // way is renamed aside), at most once a minute, and ask again.
+    // (WQFiles b6f588f: another app sharing the App Group can leave
+    // Library/Caches as a link, and every token request then refuses to
+    // start, silently.)
+    if (handle == -10) {
+        static CFAbsoluteTime lastRepair;
+        if (CFAbsoluteTimeGetCurrent() - lastRepair > 60) {
+            lastRepair = CFAbsoluteTimeGetCurrent();
+            BOOL repaired = cl_reset_access_cache();
+            cl_log(@"grant: access cache repaired automatically%@",
+                   repaired ? @"" : @" — FAILED, see the access cache reset line above");
+            if (repaired) handle = cl_query(key, altFirst);
+        }
+    }
     BOOL usedAlt = altFirst;
     if (handle >= 0 && !cl_grant_opens(key)) {
         static BOOL logged;

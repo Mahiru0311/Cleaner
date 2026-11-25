@@ -150,6 +150,45 @@ int main(void)
                 close(child);
             } @finally { chmod(parent.fileSystemRepresentation, 0700); }
             check(!CLAbsolutePathGrammar(@"/private/var/../file") && !CLAbsolutePathGrammar(@"/private//var/file"), @"grammar rejects traversal and ambiguous empty components");
+
+            // v2.10: access-cache reset (WQFiles b6f588f). A stray Caches
+            // link left by another app sharing the App Group is removed,
+            // a preserved Caches is restored, and a non-regular lock is
+            // moved aside — nothing is deleted.
+            NSString *library3 = [base stringByAppendingPathComponent:@"Library3"];
+            NSString *outside3 = [base stringByAppendingPathComponent:@"outside3"];
+            check([fm createDirectoryAtPath:library3 withIntermediateDirectories:YES attributes:nil error:nil], @"create reset fixture");
+            check([fm createDirectoryAtPath:outside3 withIntermediateDirectories:YES attributes:nil error:nil], @"create reset outside fixture");
+            check([fm createSymbolicLinkAtPath:[library3 stringByAppendingPathComponent:@"Caches"]
+                               withDestinationPath:outside3 error:nil], @"leave a stray Caches link");
+            int fd3 = CLOpenDirectoryNoLinks(library3);
+            check(fd3 >= 0, @"open reset fixture");
+            NSMutableArray<NSString *> *done = [NSMutableArray new];
+            check(CLCacheSwapReset(fd3, done), @"reset removes the stray Caches link");
+            check([done containsObject:@"removed the Caches link"], @"reset reports the removed link");
+            struct stat cachesStat;
+            check(fstatat(fd3, "Caches", &cachesStat, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(cachesStat.st_mode),
+                  @"Caches is a real folder after the reset");
+            // A preserved Caches with nowhere to go is restored.
+            NSString *preserved = [library3 stringByAppendingPathComponent:@".wq-caches-preserved"];
+            NSString *sentinel3 = [preserved stringByAppendingPathComponent:@"sentinel"];
+            check([fm createDirectoryAtPath:preserved withIntermediateDirectories:YES attributes:nil error:nil], @"create preserved fixture");
+            check([bytes writeToFile:sentinel3 atomically:YES], @"write preserved sentinel");
+            check(unlinkat(fd3, "Caches", AT_REMOVEDIR) == 0, @"remove Caches before the second reset");
+            [done removeAllObjects];
+            check(CLCacheSwapReset(fd3, done), @"reset restores the preserved Caches");
+            check([done containsObject:@"restored the preserved Caches"], @"reset reports the restore");
+            check([[NSData dataWithContentsOfFile:[library3 stringByAppendingPathComponent:@"Caches/sentinel"]] isEqual:bytes],
+                  @"preserved contents are back as Caches");
+            // A link where the lock belongs is quarantined, not followed.
+            check([fm createSymbolicLinkAtPath:[library3 stringByAppendingPathComponent:@".wq-caches-lock"]
+                               withDestinationPath:outside3 error:nil], @"leave a lock link");
+            [done removeAllObjects];
+            int lock3 = CLCacheLockOpenForRepair(fd3, done);
+            check(lock3 >= 0, @"repair opens a new lock after quarantining the link");
+            check(flock(lock3, LOCK_EX | LOCK_NB) == 0, @"the repaired lock locks");
+            close(lock3);
+            close(fd3);
             close(fd);
         } @finally {
             [fm removeItemAtPath:base error:nil];

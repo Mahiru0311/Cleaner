@@ -427,6 +427,73 @@ static inline BOOL CLRecoverSwapAtPath(NSString *libraryPath)
     return ok;
 }
 
+// Reset the access cache (v2.10, ported from WQAccessSafety.h,
+// WQCacheSwapReset, kolbicz/WQFiles commit b6f588f, v0.9.15,
+// GPL-3.0-or-later). Puts Library/Caches back into a state a token
+// query can start from: a stray link left by another worse_query app
+// sharing the App Group (LiveContainer, WQFiles #65) is removed, a
+// non-folder Caches or a preserved Caches with nowhere to go is renamed
+// aside (nothing is deleted), the swap marker is removed, and Caches is
+// created when missing. `done` records what was done, for the Log.
+static inline BOOL CLCacheSwapReset(int library, NSMutableArray<NSString *> *done)
+{
+    if (unlinkat(library, CLCacheMarkerTemp, 0) == 0) [done addObject:@"removed the temporary marker"];
+    NSString *(^aside)(void) = ^NSString *{ return [@".wq-caches-reset-" stringByAppendingString:NSUUID.UUID.UUIDString]; };
+    struct stat st;
+    if (fstatat(library, "Caches", &st, AT_SYMLINK_NOFOLLOW) == 0) {
+        if (S_ISLNK(st.st_mode)) {
+            if (unlinkat(library, "Caches", 0) != 0) return NO;
+            [done addObject:@"removed the Caches link"];
+        } else if (!S_ISDIR(st.st_mode)) {
+            NSString *name = aside();
+            if (renameatx_np(library, "Caches", library, name.fileSystemRepresentation, RENAME_EXCL) != 0) return NO;
+            [done addObject:[@"moved a non-folder Caches to " stringByAppendingString:name]];
+        }
+    } else if (errno != ENOENT) return NO;
+    if (fstatat(library, CLCacheSaved, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+        BOOL cachesFree = fstatat(library, "Caches", &st, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT;
+        if (cachesFree) {
+            if (renameatx_np(library, CLCacheSaved, library, "Caches", RENAME_EXCL) != 0) return NO;
+            [done addObject:@"restored the preserved Caches"];
+        } else {
+            NSString *name = aside();
+            if (renameatx_np(library, CLCacheSaved, library, name.fileSystemRepresentation, RENAME_EXCL) != 0) return NO;
+            [done addObject:[@"moved the preserved Caches to " stringByAppendingString:name]];
+        }
+    } else if (errno != ENOENT) return NO;
+    if (unlinkat(library, CLCacheMarker, 0) == 0) [done addObject:@"removed the swap marker"];
+    else if (errno != ENOENT) return NO;
+    if (fstatat(library, "Caches", &st, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (errno != ENOENT || mkdirat(library, "Caches", 0755) != 0) return NO;
+        [done addObject:@"created Caches"];
+    } else if (!S_ISDIR(st.st_mode)) { errno = EINVAL; return NO; }
+    return fsync(library) == 0;
+}
+
+// Unlike token requests, repair moves a non-regular lock aside first:
+// another app sharing the App Group may have left a link or folder
+// where the lock file belongs.
+static inline int CLCacheLockOpenForRepair(int library, NSMutableArray<NSString *> *done)
+{
+    int lock = CLOpenRegularAt(library, ".wq-caches-lock", O_RDWR | O_CREAT, 0600);
+    if (lock >= 0) return lock;
+    struct stat st;
+    if (fstatat(library, ".wq-caches-lock", &st, AT_SYMLINK_NOFOLLOW) != 0) return -1;
+    if (S_ISREG(st.st_mode)) { errno = EBUSY; return -1; }   // a regular lock that still could not be opened
+    NSString *name = [@".wq-caches-lock-quarantine-" stringByAppendingString:NSUUID.UUID.UUIDString];
+    if (renameatx_np(library, ".wq-caches-lock", library, name.fileSystemRepresentation, RENAME_EXCL) != 0) return -1;
+    struct stat moved;
+    BOOL same = fstatat(library, name.fileSystemRepresentation, &moved, AT_SYMLINK_NOFOLLOW) == 0 && CLSameObject(&moved, &st);
+    NSString *kind = S_ISLNK(st.st_mode) ? @"link" : S_ISDIR(st.st_mode) ? @"folder" : @"special file";
+    [done addObject:[NSString stringWithFormat:@"moved a non-regular lock (%@%@) to %@", kind,
+                     same ? @"" : @", replaced meanwhile", name]];
+    lock = CLOpenRegularAt(library, ".wq-caches-lock", O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (lock < 0) return -1;
+    if (fsync(library) != 0) { int err = errno; close(lock); errno = err; return -1; }
+    [done addObject:@"created a new lock"];
+    return lock;
+}
+
 static inline BOOL CLSwapBegin(int library, NSString *target)
 {
     if (!CLSwapRecover(library)) return NO;

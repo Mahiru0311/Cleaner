@@ -29,7 +29,12 @@
     // main thread. This only shrinks the race window: the main-thread
     // guard in CLLaunchServices is what guarantees no freeze even if a
     // page renders before this finishes.
-    dispatch_async(cl_io(), ^{ cl_load_display_names(); });
+    // v2.10: NOT on the shared serial cl_io() queue — the warm-up holds
+    // the LS lock across the daemon enumeration, so on cl_io() it queued
+    // the grant probe (Home status) and every other cl_io() user behind
+    // a long enumeration on cold launch. The loader is lock-guarded, so
+    // its own utility queue is safe; the probe now runs concurrently.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ cl_load_display_names(); });
     self.tabBar.tintColor = UIColor.systemBlueColor;
     self.delegate = self;
 

@@ -246,7 +246,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
 
 - (void)refreshStatus
 {
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.9";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.10";
     BOOL supported = cl_system_supported();
     BOOL hasGroup = cl_app_group() != nil;
     CLHomeState previousState = self.state;
@@ -579,7 +579,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     self.statusModeLabel = [self makeLabel:@"沙盒模式" font:[UIFont systemFontOfSize:15 weight:UIFontWeightMedium]
                                      color:UIColor.labelColor];
     self.statusModeLabel.numberOfLines = 2;
-    self.statusVersionLabel = [self makeLabel:[NSString stringWithFormat:@"版本：%@", NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.9"] font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
+    self.statusVersionLabel = [self makeLabel:[NSString stringWithFormat:@"版本：%@", NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.10"] font:[UIFont systemFontOfSize:15 weight:UIFontWeightRegular]
                                         color:UIColor.labelColor];
     UIStackView *statusTexts = [[UIStackView alloc] initWithArrangedSubviews:@[
         self.statusTitleLabel, self.statusModeLabel, self.statusVersionLabel]];
@@ -665,7 +665,7 @@ typedef NS_ENUM(NSInteger, CLHomeState) {
     UIView *info = [UIView new];
     info.backgroundColor = UIColor.systemBackgroundColor;
     info.layer.cornerRadius = 28;
-    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.9";
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"0.2.10";
     NSString *build = NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] ?: @"1";
     self.groupStatusValueLabel = [UILabel new];
     NSArray<UIView *> *rows = @[

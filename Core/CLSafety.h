@@ -250,9 +250,9 @@ static inline BOOL CLWriteBytes(int fd, NSData *data)
 // file itself plus -wal/-shm/-journal — and the set is only ever changed
 // together: an app with a database open locks the file and -shm but not
 // -wal, so changing one file of a live set loses its newest committed
-// rows. A non-blocking flock meeting that lock fails with EWOULDBLOCK
-// (errno 35); the refusal says so in plain words and names the app to
-// quit first, instead of surfacing "errno 35".
+// rows. A non-blocking flock meeting that lock fails with EWOULDBLOCK;
+// the refusal says so in plain words and names the app to quit first,
+// instead of surfacing the errno.
 static inline NSArray<NSString *> *CLSQLiteCompanionSuffixes(void)
 {
     return @[@"-wal", @"-shm", @"-journal"];

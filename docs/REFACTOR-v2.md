@@ -9,7 +9,7 @@
 worse_query 是 forcequitOS（Taj C）在 2026-11-08 发布的 iOS 沙盒逃逸 PoC，
 bad_query 的直接后继，GPL-3.0。不是越狱，作者明确说永远不会是越狱。
 
-支持：iOS 26.0–26.7.2 / 27.2。你的 iPhone 17 / iOS 27.0.1 在范围内。
+支持：iOS 26.0–26.7.2 / 27.0–27.3 beta 1（v2.10：27.3 beta 2 起 Apple 修了 worse_query，见 §17）。你的 iPhone 17 / iOS 27.0.1 在范围内。
 
 ### 原理（3 步）
 
@@ -1066,3 +1066,50 @@ IPA `~/workspace/downloads/cleaner-v2-8-ipa/Cleaner.ipa`，222,113 字节（< 25
 IPA `~/workspace/downloads/cleaner-v2-9-ipa/Cleaner.ipa`，222,763 字节（< 250KB 目标），SHA-256 `0b166e027d9c1868c88b55c3f3d20b25c0b4500213af7800a5b0f4293ff05750`。
 亲验（下载的 IPA 本体）：9 个文件——二进制、Info.plist、4 个图标、_CodeSignature、`Metadata.appintents/extract.actionsdata`（1,795 字节，与 v2.7/v2.8 相同）+ `version.json`（toolsVersion 26.6 / version 3.0）；无 .appex；校验器在发版包上通过（`app intents metadata OK: CleanCacheIntent (discoverable, background) + CleanerShortcuts (2 phrases)`）；元数据内容：intent 可发现 + 后台 + 标题「清理全部缓存」，provider `14CleanerIntents0A9ShortcutsV`，auto-shortcut 两条短语（`用 ${applicationName} 清理全部缓存`、`在 ${applicationName} 里清理缓存`）；Info.plist 0.2.9 / build 9 / MinimumOS 26.0 / zh_CN / iPhone only（UIDeviceFamily [1]）/ Portrait；cleaner:// scheme；bundle id `com.mahiru.cleaner`；App Group `group.com.mahiru.cleaner` 在二进制内；二进制含 `tryLock`、无 `objc_sync_tryEnter`（NSLock 方案的证据）；二进制链接了 AppIntents。注意：主二进制 562,880 字节，**仍超 <500KB 的二进制目标**（v2.8 是 562,752，+128 字节）；IPA 仍在目标内。
 真机验证仍未做：**必须用户在 iPhone 17 / iOS 27.0 上确认**——覆盖安装（不用删数据）；先强制退出应用再冷启动，启动后立刻打开清理页：上次的列表应立刻出现且界面不冻；首页数字在扫描完成后填上；tab 切换灵敏。冻没冻住只能真机确认，代码层面不能宣称已修好。**短链未生成**：v2.8 的短链经验——Muse storage 上传要用户批 egress；等用户在时再跑一次上传 + is.gd（48h），补到这里。v2.7 短链 https://is.gd/bFhulo，2026-11-13 01:37 CST 过期。
+
+## 17. v2.10（2026-11-26，上游补丁合集）——Phase 2
+
+### 背景：上游 15 天里做了什么
+
+Phase 1 调查（2026-11-26，已核对，不重做）：WQFiles 在 15 天里发了 12 个版本 / 243 个提交（v0.7 → v0.9.20，2026-11-21），是唯一的大口袋；worse_query 自 2026-11-08 起 0 提交（star 407→775、fork 85→174，只是数字涨）；3105 自 2026-09-14 起 0 push；FilzaWorse 自 2026-11-09 起 0 提交；Erosion 4 个提交全是美化；WQFiles-CN 已于 2026-11-11 停更（上游有了官方中文）；worse-query-explorer 0 提交；KernelSU 最新 release 仍是 v3.3.1（2026-10-12）；GestaltX v1.1.1（2026-11-13，只有 App Audio Library，没有设计变化——不重做任何设计）。174 个 worse_query fork / 96 个 WQFiles fork 全是空白复制或噪音。新项目：yangokok886/WCMigrate（微信迁移，只看）、squairdev/Flake（壁纸，跳过）、soum91/AppVault（备份，与现有功能重叠，跳过）、loboangel39-svg/3105-WORSE-QUERY（0★，只看）。
+
+**关键变化：Apple 在 iOS 27.3 beta 2（build 24C5049d）修了 worse_query；27.3 beta 1（24C5037i）还能用。** 支持范围现在是 iOS 26.0–26.7.2、27.0–27.3 beta 1。0.2.9（2026-11-11）发在消息之前，没有补丁检测——27.3b2+ 的用户会被误诊为签名 / App Group 问题。
+
+本次移植的每个上游来源都在实施前从克隆里逐个核对过提交号（克隆在 /tmp，用完即删）：e3b31d8、8608753、ca6d80e、b6f588f、a833974、9816fd0、f89f5fb 全部存在，与 Phase 1 给的描述一致。WQFiles 全部 GPL-3.0-or-later，与 Cleaner 兼容；来源都记在代码注释和下面。
+
+### 版本：0.2.9 → **0.2.10**（short），CFBundleVersion 9 → **10**
+
+不是 0.3.0：这是一批移植 + 修复，没有接口或行为上的大改，0.2.10 够了。
+
+### 移植了什么（按短名单顺序）
+
+1. **iOS 27.3b2 补丁检测（WQFiles e3b31d8，v0.9.15）**：`CLWorseQueryPatchedBuild`（`Core/CLSafety.h`，原样移植自 `WQAccessSafety.h` 的 `WQWorseQueryPatchedBuild`）+ `cl_os_build` / `cl_worse_query_patched`（`Core/CLGrant.{h,m}`，读 `kern.osversion`）。首页新增 `CLHomeStatePatched`：补丁系统上直接说「Apple 已在 iOS 27.3 beta 2 及之后修复了 worse_query，当前 build … 不受支持」，不再误诊为签名/App Group 问题（重装也修不好，日志记一行 `home: build … is iOS 27.3 beta 2 or later`）。`cl_system_supported` 现在放行 27.3（`minor <= 3`）——27.3 beta 1 能用，靠 build 号区分 beta 1 和 beta 2+，不是靠版本号。首页「支持范围」行改成「iOS 26.0–26.7.2 / 27.0–27.3 beta 1」，三个旧文案（警告卡、弹窗、信息行）同步。注意：旧逻辑里 27.3 一律判不支持，所以 27.3 beta 1 在 0.2.9 里会被错判——这次一起修了。
+2. **Crash Logs 真实路径（WQFiles 8608753，v0.9.14）**：系统群组路径在 27.0.1 上根本不存在，崩溃日志一直是 "limited"、永远测不到。新 `CLCrashLogCandidates()`（`Core/CLCache.m`）：先试 `/private/var/mobile/Library/Logs/CrashReporter`（系统自己代码里的路径），再试 osanalytics 群组路径；哪个存在用哪个（拒绝时先 `cl_grant` 再重试）；两个都不存在/到不了就**不显示这一行**，不再报 limited（iOS 26 上也是这个结果，只是这次走候选探测而不是版本门）。`CLCacheCrashPathIsSafe` 改为接受任一候选路径（精确拼写 + 无链接祖先 + canonical 等于自身；上游指出 `stringByStandardizingPath` 只有能查路径时才去 `/private`，比较结果依赖访问权限）。持久化的崩溃日志行现在存 `targetPath`（可选键，旧文件没有就回退到群组路径），刷新合并时键一致，不会重复出一行。
+3. **SQLite 族原子性 + errno 35 提示（WQFiles ca6d80e，v0.9.20）**：族工具函数移植到 `Core/CLSafety.h`（`CLSQLiteFamilyBase` / `CLSQLiteIsCompanion` / `CLSQLiteLockedByOther` / `CLSQLiteFamilyLockedMember` / `CLSQLiteFamilyRefusal`，中文拒绝文案）。恢复和清空数据之前先做 fd 遍历探测（`Core/CLApp.m` 的 `cl_sqlite_locked_member_in_tree`：`openat` 递归，不跟链接；只探带 `-wal`/`-shm`/`-journal` 的族——单个数据库没有族可守，探所有文件会把无关的 lock 文件也当成拒绝理由；WAL 模式下打开的库有 `-shm`，journal 模式下正在写有 `-journal`，所以锁只能落在族成员上才看得见）。族里任一成员被锁就**整个拒绝**，报被锁成员的容器相对路径，让用户先退出该应用（恢复是在安全备份之前拒绝的：什么都没改，没有 journal、不用回滚）。恢复时的 `-wal`/`-shm` 重置在 Cleaner 里已经是结构性的：整个 part 先清空，`cl_purge_and_verify` 校验目录为空才往回拷，所以陈旧的 companion 不可能活过一次恢复——这点记在这里，不是漏移植。
+4. **Access cache 自动修复（WQFiles b6f588f，v0.9.15）**：先核对了 Cleaner 的 access cache 确实有这个故障模式——`CLSwapBegin` 在 `Library/Caches` 是外来链接时直接返回 NO，而 `cl_query` 原来把所有失败都当 -4，没有任何修复路径。移植 `CLCacheSwapReset` + `CLCacheLockOpenForRepair`（`Core/CLSafety.h`，原样移植自 `WQAccessSafety.h`）：什么都不删，碍事的改名挪开（`.wq-caches-reset-<uuid>` / `.wq-caches-lock-quarantine-<uuid>`）。`cl_query` 现在区分：swap 无法开始或 lock 文件本身打不开 → -10（修复信号）；lock 被别的进程占着 → 仍是 -4，绝不在它下面修。`cl_grant` 在 -10 时最多每分钟修一次并重试同一套 flags（`grant: access cache repaired automatically` 进日志），修不好再走原来的备用 flags。没有加手动「重置 Access Cache」设置项：自动修复已经覆盖了。
+5. **自定义目标安全规则（WQFiles a833974，v0.9.18）**：逐条对照了 v2.5 的目录规则。Cleaner 已有：相对路径、禁 `.`/`..`、禁裸 `Documents`/`Library`。缺的是禁 `Library/Preferences`、`SyncedPreferences`、`Cookies`、`Saved Application State`——文件夹规则会清空整个目录，清空 Preferences 等于重置应用而不是清缓存。已补进 `cl_custom_clean_validate_folder_pattern`（folder 和 directory 两类规则都走它）。**特意没移植**上游的两条：≥2 段的要求（Cleaner 有意允许单段 `tmp`）和顶层只限 Library/Documents/tmp（Cleaner 的文件夹规则来自选择器里的真实目录或粘贴路径，Documents/Library 根已禁）。
+6. **扫描加速（WQFiles 9816fd0，v0.9.13）**：**对照检查，未改代码。** 上游的毛病是两处：utility 优先级的扫描队列 + 每量一个目录都要从 `/` 重新打开、每次跳 mutation 队列。Cleaner 都没有：`cl_measure_fd`（`Core/CLCache.m`）是递归 fd 遍历，每个子目录一次 `openat`（直接打开，不从 `/` 重开），扫描跑在 `QOS_CLASS_USER_INITIATED`（`Core/CLCache.m:1346/1396`、`Core/CLScan.m:709`）。没有同样的毛病可修。
+7. **单字 bundle ID（WQFiles f89f5fb，v0.9.19）**：`CLAppSupportBundleIDValid`（`Core/CLAppSupport.h`）不再要求含点——Pinterest（`pinterest`）和凤凰新闻（`ifengNews`）以前显示「容器身份不可用」，0 KB、不能备份/清理。核对过两处按点切分的父级回退（`CLLaunchServices.m:765`、`App/CLUI.m:244`）：循环下界分别是 `n >= 2` / `n >= 3`，单字 id 根本不进循环。长度、点位置、字符集检查还在，id 仍是安全的文件夹名。
+8. **按分配块计量（worsefiles-ios `Engine/FileWalk.swift` + `Engine/AppSizeStore.swift`，v1.0.11）**：**未移植，记为以后工作。** 两个候选仓库名（`kolbicz/worsefiles-ios`、`kolbicz/worsefiles`）在 GitHub 上都不存在（`ls-remote` 404），公开搜索也找不到 `AppSizeStore`，来源无法核对；Cleaner 已有清理前后字节统计，这只是计量上的细化。
+
+### 顺手修的（可选，低风险）
+
+- **v2.9 冷启动慢**：LS 预热原来跑在共享串行 `cl_io()` 队列上，预热期间占着 LS 锁做 daemon 枚举，授权探针（首页状态）和所有 `cl_io()` 用户都在冷启动时排它后面。改到自己的 utility 队列（`App/CLTabBarController.m`）：loader 本身有锁保护，主线程守卫（v2.9）才是防冻的保证，换队列只让探针能并发跑。回归测试相应更新（v2.9 里断言预热在 `cl_io()` 上那行已改）。
+
+### 刻意跳过的（原因）
+
+Erosion 美化；3105 的 MobileHouseArrest + 企业证书容器法；任何越狱 / TrollStore 专属逻辑；任何 UI 重做；WQFiles 的 App Store 图标查询（要把 bundle ID 发给 Apple——Cleaner 绝不做）；Wi-Fi 分享、主题、JS 检查器；WCMigrate 的微信迁移本身；3105-WORSE-QUERY（未验证，只看）。GestaltX v1.1.1 无设计变化，不动设计。`Metadata.appintents` 提取流程、`openAppWhenRun=false`、无 extension、keepAlive、bundle ID / App Group / `cleaner://` scheme、clean 动画（0.2.3 起未动，回归测试守着）全部未动。
+
+### 测试
+
+- 新 ObjC 测试：补丁 build 矩阵（24C5037i 不补、24C5048a 不补、24C5049d 补、24C5100a 补、24C100 补、24B 不补、24D 补、23A 不补、25A 补、空/无数字/nil 不补）；SQLite 族 base/companion/被锁成员/拒绝文案（真实 flock）；access-cache 重置（去 stray Caches 链接、恢复 preserved Caches、隔离非正规 lock 文件）；恢复/清空门（嵌套的被锁族报出容器相对路径、空闲族放行、单个无 companion 数据库不触发、无关 lock 文件不触发、缺失 part 不报错）；自定义规则禁设置文件夹（4 个全禁，`Library/Caches`、`tmp` 仍放行）；单字 bundle ID（`pinterest`/`ifengNews` 放行，`ab`/`...` 仍禁）；崩溃日志行目标路径持久化往返（mobile 路径保留，外来目标回退）。
+- `tests/browser_ui_regressions.py` 新增 v2.10 段：补丁检测、支持范围、崩溃日志候选、SQLite 族、自动修复、设置文件夹禁令、单字 bundle ID、扫描已是 fd 遍历（对照）、未移植分配块计量；版本检查改 0.2.10 / build 10，首页 fallback 改 0.2.10；预热改断言 utility 队列。
+- 本地已验（Linux，无 Xcode）：`browser_ui_regressions.py` 通过；`python3 -m unittest discover -s tests -p 'test_*.py'` 18 个，2 个失败与 v2.0–v2.9 相同（`test_build` 两用例缺 `plutil`，Linux 固有）；`bash -n build.sh tests/run_all_tests.sh` 通过。ObjC 测试在 macOS Actions runner 上跑（`run_all_tests.sh`）。
+
+### 构建
+
+（构建成功后补：run id、IPA 路径/大小/SHA、亲验结果。）
+
+### 真机验证仍未做
+
+**必须用户在 iPhone 17 / iOS 27.0 上确认**——覆盖安装（不用删数据）；首页支持范围显示「iOS 26.0–26.7.2 / 27.0–27.3 beta 1」；清理页崩溃日志行应有真实大小（0.2.9 里一直是受限/0）；恢复一个正在运行的应用应被拒绝并提示先退出；清理页、tab 切换、快捷指令与 0.2.9 一致。补丁检测、自动修复、SQLite 门在真机上的表现只能真机确认，代码层面不能宣称已修好。**短链未生成**：Muse storage 上传要用户批 egress；等用户在时再跑一次上传 + is.gd（48h），补到这里。

@@ -599,7 +599,7 @@ require(validator, "0A9ShortcutsV", "mangled provider name, literal never appear
 require(validator, "autoShortcuts", "validator checks the auto-shortcuts section")
 require(validator, "extract.actionsdata", "validator parses the actions data")
 require(validator, "version.json", "validator requires version.json")
-require(info, "<string>9</string>", "CFBundleVersion is 9")
+require(info, "<string>10</string>", "CFBundleVersion is 10")
 forbid(info, "<string>1</string>", "old frozen CFBundleVersion 1 is gone")
 require(main, "Metadata.appintents", "main comment describes the metadata file")
 forbid(main, "discovers intents by scanning the binary", "binary-scanning claim is gone from main")
@@ -711,11 +711,13 @@ forbid(cleaner, "arrayByAddingObjectsFromArray", "batch merge no longer appends 
 # daemon inode scan finished, freezing the whole UI (Home showed "—",
 # the tab-bar Liquid Glass pill froze mid-morph). Main-thread lookups now
 # return the already-loaded snapshot + built-in names without triggering
-# a load and without waiting for one in progress (NSLock tryLock);
-# the names warm up on cl_io() at launch instead. The batch merge also
-# moved to Core: a replaced row that moved after the re-sort falls back
-# to a plain reloadData, because reloadRows needs the path to exist
-# before AND after the update at the same index.
+# a load and without waiting for one in progress (NSLock tryLock).
+# v2.10: the warm-up moved OFF cl_io() onto its own utility queue — on
+# the shared serial queue it held the LS lock across the daemon
+# enumeration and queued the grant probe behind it on cold launch.
+# The batch merge also moved to Core: a replaced row that moved after
+# the re-sort falls back to a plain reloadData, because reloadRows needs
+# the path to exist before AND after the update at the same index.
 # (objc_sync_tryEnter was the first try: it is not declared by any public
 # header in the Xcode 26 SDKs — runs 42931834738/42932018244/42932279714 —
 # so the lock is a plain NSLock and the main thread uses tryLock.)
@@ -725,7 +727,8 @@ require(ls, "cl_known_name_no_load_locked", "main-thread lookups read the snapsh
 require(ls, "if (NSThread.isMainThread) return;", "main thread never triggers an LS load")
 require(ls, "cl_test_ls_load_attempt_count", "load-attempt counter for the main-thread test")
 require(tabbar, "cl_load_display_names", "names warm up on a background thread at launch")
-require(tabbar, "dispatch_async(cl_io()", "warm-up runs off the main thread")
+require(tabbar, "dispatch_get_global_queue(QOS_CLASS_UTILITY, 0)", "warm-up has its own queue, off cl_io()")
+forbid(tabbar, "dispatch_async(cl_io(), ^{ cl_load_display_names", "warm-up no longer blocks cl_io() (v2.10)")
 require(cleaner, "if (moved || strongSelf->_query.length)", "moved replaced rows fall back to reloadData")
 require(cache, "CLCacheItemMergeKey", "merge key lives in Core")
 require(cache, "cl_cache_merge_items", "Core merge function")
@@ -737,10 +740,10 @@ forbid(cleaner, "NSMutableArray<CLCacheItem *> *merged = [(strongSelf->_items", 
 require(home, "沙盒模式", "mode line is short")
 forbid(home, '@"<App Group> [沙盒模式]"', "old mode line that broke mid-word")
 # v2.7: the version label is dynamic (reads the bundle), and the two
-# fallbacks use 0.2.9 — no hardcoded 0.2.8 anywhere in Home.
+# fallbacks use 0.2.10 — no hardcoded 0.2.9 anywhere in Home.
 require(home, 'stringWithFormat:@"版本：%@"', "version label is dynamic, not hardcoded")
-require(home, '@"0.2.9"', "home fallback version tracks the release")
-forbid(home, "0.2.8", "no hardcoded 0.2.8 in home")
+require(home, '@"0.2.10"', "home fallback version tracks the release")
+forbid(home, "0.2.9", "no hardcoded 0.2.9 in home")
 
 # --- Animations (v2.3, redone): scan batches insert with a fade, the
 # progress bar shows the real scan fraction, cleaning shows a per-row
@@ -777,7 +780,7 @@ require(main, "cl_set_container_label_resolver", "container label resolver")
 require(main, "cl_set_container_list_provider", "container list provider")
 require(main, "cl_recover_interrupted_restore", "interrupted restore recovery")
 
-# --- Build: only the v2 sources, iPhone only, 0.2.9. ---
+# --- Build: only the v2 sources, iPhone only, 0.2.10. ---
 for source in ("Core/CLGrant.m", "Core/CLScan.m", "Core/CLCache.m", "Core/CLApp.m",
                "Core/CLLaunchServices.m", "Core/CLCustomClean.m", "Core/CLBackgroundClean.m",
                "App/CLUI.m",
@@ -803,10 +806,64 @@ forbid(build, "-Os -dead_strip", "dead-strip removed from the link")
 runner = read(ROOT / "tests" / "run_all_tests.sh")
 for source in ("App/CLRulePickerViewController.m", "App/CLShortcutsGuideViewController.m"):
     require(runner, source, f"strict-check source {source}")
-require(info, "<string>0.2.9</string>", "version 0.2.9")
-forbid(info, "<string>0.2.8</string>", "old version 0.2.8")
+require(info, "<string>0.2.10</string>", "version 0.2.10")
+forbid(info, "<string>0.2.9</string>", "old version 0.2.9")
 forbid(info, "CFBundleIcons~ipad", "iPad icon set")
 forbid(info, "UISupportedInterfaceOrientations~ipad", "iPad orientations")
+
+# --- v2.10: upstream ports (WQFiles 0.9.13–0.9.20) + LS warm-up off cl_io(). ---
+# 1. iOS 27.3 beta 2 patched worse_query (e3b31d8): the build check says so
+# at launch instead of misdiagnosing it as a signing/App Group problem;
+# the supported range is 26.0–26.7.2 / 27.0–27.3 beta 1, and 27.3 is
+# allowed by version so the build check can separate beta 1 from beta 2+.
+# 2. Crash Logs live in mobile's Library (8608753), system-group second;
+# where neither exists the section is left out, not "limited".
+# 3. SQLite sets are refused together with a readable reason (ca6d80e);
+# the restore/clear gate probes the live tree before any mutation.
+# 4. A broken access cache repairs itself, at most once a minute (b6f588f).
+# 5. Custom rules never purge the app's settings folders (a833974).
+# 7. One-word bundle ids work (f89f5fb). 6 (scan speedup) and 8 (allocated
+# size) were NOT ported: the measure walk is already fd-based with direct
+# openat per directory at USER_INITIATED priority, and the allocated-size
+# source repo could not be verified — see REFACTOR-v2.md §17.
+safety = read(CORE / "CLSafety.h")
+grant = read(CORE / "CLGrant.m")
+appsupport = read(CORE / "CLAppSupport.h")
+appm = read(CORE / "CLApp.m")
+require(safety, "CLWorseQueryPatchedBuild", "patch check is the ported WQFiles pure function")
+require(safety, "24C5049d", "patch threshold build is named")
+require(grant, "cl_worse_query_patched", "grant layer exposes the patch check")
+require(grant, "cl_os_build", "build string comes from kern.osversion")
+require(home, "CLHomeStatePatched", "home has a Patched state")
+require(home, "27.3 beta 2", "home names the patch")
+require(home, "iOS 26.0–26.7.2 / 27.0–27.3 beta 1", "supported range is 27.0–27.3 beta 1")
+forbid(home, "iOS 26.0–26.7.2 / 27.2", "old supported range is gone")
+require(home, "minor <= 3", "27.3 is allowed by version; the build check separates the betas")
+require(cache, "/private/var/mobile/Library/Logs/CrashReporter", "crash logs try the real path first")
+require(cache, "CLCrashLogCandidates", "crash-log candidates (real path + system-group fallback)")
+require(cache, "no crash log folder", "no crash-log folder is left out, not limited")
+require(cache, "targetPath", "saved crash-log rows persist the scanned target path")
+require(safety, "CLSQLiteFamilyBase", "SQLite family base helper")
+require(safety, "CLSQLiteFamilyLockedMember", "SQLite family locked-member probe")
+require(safety, "CLSQLiteFamilyRefusal", "SQLite family refusal text")
+require(safety, "请先退出该应用", "SQLite refusal tells the user to quit the app first")
+forbid(safety, "errno 35", "the refusal never surfaces errno 35")
+require(appm, "cl_sqlite_locked_member_in_tree", "restore/clear gate probes the live tree")
+require(appm, "SQLite 数据库已打开", "restore/clear refusal names the live database")
+require(grant, "cl_reset_access_cache", "access-cache reset helper")
+require(grant, "CLCacheSwapReset", "reset uses the ported swap reset")
+require(grant, "access cache repaired automatically", "auto-repair is logged")
+require(grant, "handle == -10", "only a query that cannot start triggers the repair")
+require(safety, "CLCacheSwapReset", "swap reset primitive (rename aside, never delete)")
+require(safety, "CLCacheLockOpenForRepair", "repair moves a non-regular lock aside first")
+require(custom, "Saved Application State", "settings folders are banned from custom rules")
+require(custom, "SyncedPreferences", "SyncedPreferences is banned from custom rules")
+require(custom, '@"Cookies"', "Cookies is banned from custom rules")
+require(appsupport, "pinterest", "one-word bundle ids are accepted")
+forbid(appsupport, 'containsString:@"."', "bundle-id validation no longer requires a dot")
+require(cache, "cl_measure_fd", "measure walk is already recursive fd-based (no scan port needed)")
+require(cache, "QOS_CLASS_USER_INITIATED", "scan already runs user-initiated (no scan port needed)")
+forbid(all_sources, "totalFileAllocatedSize", "allocated-size metering was not ported")
 
 # --- No emoji anywhere in the app sources (long-term rule). ---
 emoji = re.compile("[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]")
